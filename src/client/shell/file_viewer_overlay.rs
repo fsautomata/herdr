@@ -33,7 +33,9 @@ pub(super) fn render_file_viewer_overlay(
 
     // Header: title, path, close button.
     let close_label = match (v.mode, v.search_focused) {
-        (FileViewerMode::View, _) | (FileViewerMode::Browse, true) => " esc back ",
+        (FileViewerMode::View | FileViewerMode::Diff, _) | (FileViewerMode::Browse, true) => {
+            " esc back "
+        }
         (FileViewerMode::Browse, false) => " esc close ",
     };
     let close_w = display_width(close_label);
@@ -58,6 +60,10 @@ pub(super) fn render_file_viewer_overlay(
     );
     let shown_path = match (v.mode, v.document.as_ref()) {
         (FileViewerMode::View, Some(document)) => document.content.path.as_str(),
+        (FileViewerMode::Diff, _) => v
+            .diff
+            .as_ref()
+            .map_or(v.dir.as_str(), |diff| diff.info.path.as_str()),
         _ => v.dir.as_str(),
     };
     let path_x = i.x + display_width(title);
@@ -81,18 +87,23 @@ pub(super) fn render_file_viewer_overlay(
     let cursor = match v.mode {
         FileViewerMode::Browse => render_browser(b, v, i, body, p, &mut hits),
         FileViewerMode::View => render_document(b, v, i, body, p, &mut hits),
+        FileViewerMode::Diff => {
+            render_diff(b, v, i, body, p, &mut hits);
+            None
+        }
     };
 
     let footer = match (v.mode, v.search_focused) {
+        (FileViewerMode::Diff, _) => " scroll j/k/pgup/pgdn/g/G · staged s · reload r · back esc",
         (FileViewerMode::View, _) if has_comments(v) => {
-            " select+c comment · n/N thread · a reply · d delete · t panel · m raw · esc back"
+            " select+c comment · n/N thread · a reply · d delete · t panel · m raw · D diff · esc back"
         }
         (FileViewerMode::View, _) => {
-            " scroll j/k/pgup/pgdn/g/G · raw/rendered m · reload r · back esc/h"
+            " scroll j/k/pgup/pgdn/g/G · raw/rendered m · diff D · reload r · back esc/h"
         }
         (FileViewerMode::Browse, true) => " open enter · move ↑↓ · clear esc",
         (FileViewerMode::Browse, false) => {
-            " open enter/l · up h/⌫ · filter / · hidden . · reload r · view tab · close esc"
+            " open enter/l · up h/⌫ · filter / · hidden . · diff D · reload r · close esc"
         }
     };
     put_text(b, i.x, i.bottom() - 1, i.width, footer, dim);
@@ -438,6 +449,125 @@ fn render_document(
     cursor
 }
 
+fn render_diff(
+    b: &mut Buffer,
+    v: &ClientFileViewerOverlay,
+    i: Rect,
+    body: Rect,
+    p: &Palette,
+    hits: &mut FileViewerHits,
+) {
+    let dim = Style::default().fg(p.overlay0).bg(p.panel_bg);
+    let Some(diff) = v.diff.as_ref() else {
+        return;
+    };
+    let mut meta = vec![
+        if diff.staged {
+            "staged changes vs HEAD".to_owned()
+        } else {
+            "work tree vs HEAD".to_owned()
+        },
+        format!("repo {}", diff.info.repo_root),
+    ];
+    if diff.info.truncated {
+        meta.push("truncated".to_owned());
+    }
+    put_text(
+        b,
+        i.x,
+        i.y + 1,
+        i.width,
+        &format!(" {}", meta.join(" · ")),
+        dim,
+    );
+
+    let mut area = body;
+    if let Some((text, style)) = status_message(v) {
+        put_text(b, area.x, area.y, area.width, &text, style.bg(p.panel_bg));
+        area = Rect::new(
+            area.x,
+            area.y + 1,
+            area.width,
+            area.height.saturating_sub(1),
+        );
+    }
+    let viewport = usize::from(area.height);
+    hits.viewport_rows = viewport.max(1);
+    if diff.info.text.is_empty() {
+        put_text(
+            b,
+            area.x + 1,
+            area.y,
+            area.width.saturating_sub(1),
+            if diff.staged {
+                "no staged changes"
+            } else {
+                "no changes"
+            },
+            dim,
+        );
+        return;
+    }
+    if viewport == 0 || area.width < 4 {
+        return;
+    }
+    let source = diff.info.text.as_str();
+    let mut width = usize::from(area.width) - 1;
+    let mut counts = diff.doc.row_counts(source, width);
+    let mut total_rows: usize = counts.iter().sum();
+    let needs_scrollbar = total_rows > viewport;
+    if needs_scrollbar {
+        width -= 1;
+        counts = diff.doc.row_counts(source, width);
+        total_rows = counts.iter().sum();
+    }
+    let max_scroll = total_rows.saturating_sub(viewport);
+    let scroll = diff.scroll.min(max_scroll);
+    hits.max_scroll = max_scroll;
+    let decorations = Decorations {
+        anchors: Vec::new(),
+        selection: None,
+    };
+    let mut row_index = 0usize;
+    let mut y = area.y;
+    'lines: for (line, count) in diff.doc.lines.iter().zip(counts.iter()) {
+        if row_index + count <= scroll {
+            row_index += count;
+            continue;
+        }
+        for row in crate::ui::document::layout_line(source, line, width) {
+            if row_index < scroll {
+                row_index += 1;
+                continue;
+            }
+            if y >= area.bottom() {
+                break 'lines;
+            }
+            draw_row(
+                b,
+                Rect::new(area.x, y, width as u16, 1),
+                &row,
+                p,
+                row_index,
+                &decorations,
+            );
+            y += 1;
+            row_index += 1;
+        }
+    }
+    if needs_scrollbar {
+        let track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
+        let metrics = crate::pane::ScrollMetrics {
+            offset_from_bottom: max_scroll.saturating_sub(scroll),
+            max_offset_from_bottom: max_scroll,
+            viewport_rows: viewport,
+        };
+        draw_scrollbar(b, track, metrics, p);
+        hits.scrollbar = track;
+        hits.scroll_metrics = Some(metrics);
+    }
+}
+
 /// Comment anchors (with focus) and the mouse selection to paint over document text.
 struct Decorations {
     anchors: Vec<(std::ops::Range<usize>, bool)>,
@@ -565,6 +695,15 @@ fn doc_style(style: crate::ui::document::DocStyle, p: &Palette) -> Style {
     }
     if style.dim {
         out = out.fg(p.overlay0);
+    }
+    if style.diff_add {
+        out = out.fg(p.green);
+    }
+    if style.diff_del {
+        out = out.fg(p.red);
+    }
+    if style.diff_hunk {
+        out = out.fg(p.mauve).add_modifier(Modifier::BOLD);
     }
     out
 }

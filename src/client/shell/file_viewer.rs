@@ -21,6 +21,7 @@ const WHEEL_ROWS: usize = 3;
 pub(super) enum FileViewerMode {
     Browse,
     View,
+    Diff,
 }
 
 /// One visible row of the directory browser.
@@ -125,6 +126,17 @@ impl FileViewerDocument {
     }
 }
 
+/// A `git.diff` result shown in diff mode.
+#[derive(Debug)]
+pub(super) struct FileViewerDiff {
+    pub(super) info: crate::api::schema::GitDiffInfo,
+    pub(super) doc: crate::ui::document::Doc,
+    pub(super) staged: bool,
+    pub(super) scroll: usize,
+    /// Mode to return to when leaving the diff.
+    pub(super) return_to: FileViewerMode,
+}
+
 #[derive(Debug)]
 pub(super) struct ClientFileViewerOverlay {
     pub(super) mode: FileViewerMode,
@@ -147,6 +159,9 @@ pub(super) struct ClientFileViewerOverlay {
     /// Entry name to select when the next listing arrives (e.g. the directory we came from).
     pub(super) select_after_list: Option<String>,
     pub(super) comments: super::file_viewer_comments::CommentState,
+    pub(super) diff: Option<Box<FileViewerDiff>>,
+    /// Staged flag and return mode of the diff request in flight.
+    pending_diff: Option<(bool, FileViewerMode)>,
 }
 
 impl ClientFileViewerOverlay {
@@ -168,6 +183,8 @@ impl ClientFileViewerOverlay {
             serial: 0,
             select_after_list: None,
             comments: super::file_viewer_comments::CommentState::new(),
+            diff: None,
+            pending_diff: None,
         }
     }
 
@@ -221,6 +238,16 @@ impl ClientFileViewerOverlay {
         }
     }
 
+    fn scroll_diff(&mut self, delta: isize) {
+        if let Some(diff) = self.diff.as_mut() {
+            diff.scroll = if delta.is_negative() {
+                diff.scroll.saturating_sub(delta.unsigned_abs())
+            } else {
+                diff.scroll.saturating_add(delta.unsigned_abs())
+            };
+        }
+    }
+
     fn path_of(&self, name: &str) -> String {
         join_path(&self.dir, name)
     }
@@ -239,6 +266,11 @@ enum FileViewerRequest {
         path: String,
         text: String,
         expected_sha256: String,
+    },
+    Diff {
+        path: String,
+        staged: bool,
+        return_to: FileViewerMode,
     },
 }
 
@@ -354,6 +386,18 @@ impl ClientShellState {
                     PendingEndpointKind::FileViewerWrite { serial },
                 )
             }
+            FileViewerRequest::Diff {
+                path,
+                staged,
+                return_to,
+            } => {
+                viewer.loading = Some(format!("diffing {path}"));
+                viewer.pending_diff = Some((staged, return_to));
+                (
+                    Method::GitDiff(crate::api::schema::GitDiffParams { path, staged }),
+                    PendingEndpointKind::FileViewerDiff { serial },
+                )
+            }
         };
         let method_name = crate::api::api_method_name(&method).to_owned();
         let sent = self.push_endpoint_method_with_kind(method, kind, outcome);
@@ -402,6 +446,7 @@ impl ClientShellState {
             PendingEndpointKind::FileViewerList { serial }
             | PendingEndpointKind::FileViewerRead { serial } => (serial, false),
             PendingEndpointKind::FileViewerWrite { serial } => (serial, true),
+            PendingEndpointKind::FileViewerDiff { serial } => (serial, false),
             _ => return (false, Vec::new()),
         };
         if serial != viewer.serial {
@@ -459,8 +504,26 @@ impl ClientShellState {
                     .as_ref()
                     .is_some_and(|pending| pending.reloading);
             }
+            Ok(ResponseResult::GitDiff { diff }) => {
+                let (staged, return_to) = viewer
+                    .pending_diff
+                    .take()
+                    .unwrap_or((false, FileViewerMode::Browse));
+                let doc = crate::ui::document::Doc::diff(&diff.text);
+                viewer.diff = Some(Box::new(FileViewerDiff {
+                    info: diff,
+                    doc,
+                    staged,
+                    scroll: 0,
+                    return_to,
+                }));
+                viewer.mode = FileViewerMode::Diff;
+            }
             Ok(_) => viewer.error = Some("unexpected response from server".to_owned()),
-            Err(error) => viewer.error = Some(error.message),
+            Err(error) => {
+                viewer.pending_diff = None;
+                viewer.error = Some(error.message);
+            }
         }
         if retry_after_reload {
             self.retry_file_viewer_edit_after_reload(&mut outcome);
@@ -519,6 +582,16 @@ impl ClientShellState {
         let Some(ClientShellOverlay::FileViewer(viewer)) = self.overlay.as_ref() else {
             return;
         };
+        if let (FileViewerMode::Diff, Some(diff)) = (viewer.mode, viewer.diff.as_ref()) {
+            let request = FileViewerRequest::Diff {
+                path: diff.info.path.clone(),
+                staged: diff.staged,
+                return_to: diff.return_to,
+            };
+            self.send_file_viewer_request(request, outcome);
+            outcome.repaint = true;
+            return;
+        }
         let request = match (viewer.mode, viewer.document.as_ref()) {
             (FileViewerMode::View, Some(document)) => FileViewerRequest::Read {
                 path: document.content.path.clone(),
@@ -576,6 +649,42 @@ impl ClientShellState {
             .map_or(PAGE_ROWS, |hits| hits.viewport_rows.max(1));
         outcome.repaint = true;
         match viewer.mode {
+            FileViewerMode::Diff => match code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') | KeyCode::Left => {
+                    viewer.mode = viewer
+                        .diff
+                        .as_ref()
+                        .map_or(FileViewerMode::Browse, |diff| diff.return_to);
+                }
+                KeyCode::Down | KeyCode::Char('j') => viewer.scroll_diff(1),
+                KeyCode::Up | KeyCode::Char('k') => viewer.scroll_diff(-1),
+                KeyCode::PageDown | KeyCode::Char(' ') => viewer.scroll_diff(page as isize),
+                KeyCode::PageUp => viewer.scroll_diff(-(page as isize)),
+                KeyCode::Char('d') if ctrl => viewer.scroll_diff((page / 2) as isize),
+                KeyCode::Char('u') if ctrl => viewer.scroll_diff(-((page / 2) as isize)),
+                KeyCode::Home | KeyCode::Char('g') => {
+                    if let Some(diff) = viewer.diff.as_mut() {
+                        diff.scroll = 0;
+                    }
+                }
+                KeyCode::End | KeyCode::Char('G') => {
+                    if let Some(diff) = viewer.diff.as_mut() {
+                        diff.scroll = usize::MAX;
+                    }
+                }
+                KeyCode::Char('s') => {
+                    if let Some(diff) = viewer.diff.as_ref() {
+                        let request = FileViewerRequest::Diff {
+                            path: diff.info.path.clone(),
+                            staged: !diff.staged,
+                            return_to: diff.return_to,
+                        };
+                        self.send_file_viewer_request(request, outcome);
+                    }
+                }
+                KeyCode::Char('r') => self.file_viewer_reload(outcome),
+                _ => outcome.repaint = false,
+            },
             FileViewerMode::View => match code {
                 KeyCode::Esc
                 | KeyCode::Char('q')
@@ -602,6 +711,16 @@ impl ClientShellState {
                 KeyCode::Char('m') => {
                     if let Some(document) = viewer.document.as_mut() {
                         document.toggle_rendered();
+                    }
+                }
+                KeyCode::Char('D') => {
+                    if let Some(document) = viewer.document.as_ref() {
+                        let request = FileViewerRequest::Diff {
+                            path: document.content.path.clone(),
+                            staged: false,
+                            return_to: FileViewerMode::View,
+                        };
+                        self.send_file_viewer_request(request, outcome);
                     }
                 }
                 _ => outcome.repaint = false,
@@ -653,6 +772,22 @@ impl ClientShellState {
                         viewer.mode = FileViewerMode::View;
                     }
                 }
+                KeyCode::Char('D') => {
+                    let path = match viewer.selected_row() {
+                        Some(FileViewerRow::Entry(index)) => {
+                            viewer.path_of(&viewer.entries[index].name)
+                        }
+                        _ => viewer.dir.clone(),
+                    };
+                    self.send_file_viewer_request(
+                        FileViewerRequest::Diff {
+                            path,
+                            staged: false,
+                            return_to: FileViewerMode::Browse,
+                        },
+                        outcome,
+                    );
+                }
                 _ => outcome.repaint = false,
             },
         }
@@ -684,13 +819,19 @@ impl ClientShellState {
                 };
                 match viewer.mode {
                     FileViewerMode::View => viewer.scroll_document(delta),
+                    FileViewerMode::Diff => viewer.scroll_diff(delta),
                     FileViewerMode::Browse => viewer.move_selection(delta),
                 }
                 outcome.repaint = true;
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if super::contains(hits.close, point) {
-                    if viewer.mode == FileViewerMode::View {
+                    if viewer.mode == FileViewerMode::Diff {
+                        viewer.mode = viewer
+                            .diff
+                            .as_ref()
+                            .map_or(FileViewerMode::Browse, |diff| diff.return_to);
+                    } else if viewer.mode == FileViewerMode::View {
                         viewer.mode = FileViewerMode::Browse;
                     } else if viewer.search_focused {
                         viewer.search_focused = false;
@@ -715,6 +856,11 @@ impl ClientShellState {
                             FileViewerMode::View => {
                                 if let Some(document) = viewer.document.as_mut() {
                                     document.scroll = target;
+                                }
+                            }
+                            FileViewerMode::Diff => {
+                                if let Some(diff) = viewer.diff.as_mut() {
+                                    diff.scroll = target;
                                 }
                             }
                             FileViewerMode::Browse => {
@@ -757,6 +903,11 @@ impl ClientShellState {
         if let Some(ClientShellOverlay::FileViewer(viewer)) = self.overlay.as_mut() {
             match viewer.mode {
                 FileViewerMode::Browse => viewer.list_scroll = hits.list_scroll,
+                FileViewerMode::Diff => {
+                    if let Some(diff) = viewer.diff.as_mut() {
+                        diff.scroll = diff.scroll.min(hits.max_scroll);
+                    }
+                }
                 FileViewerMode::View => {
                     if let Some(document) = viewer.document.as_mut() {
                         document.scroll = document.scroll.min(hits.max_scroll);

@@ -293,3 +293,77 @@ fn file_viewer_scrolls_long_documents_and_clamps_at_the_end() {
     state.handle_input_bytes(b"g");
     assert!(screen(&mut state).contains("line 1 "));
 }
+
+#[test]
+fn file_viewer_diff_mode_shows_git_changes_and_toggles_staged() {
+    let mut state = open_state();
+    let list = open_viewer(&mut state);
+    state.handle_endpoint_result(
+        "boot-1",
+        &list.id,
+        Ok(listing(
+            "/repo",
+            Some("/"),
+            vec![
+                entry("src", FileEntryKind::Directory, 0),
+                entry("notes.txt", FileEntryKind::File, 5),
+            ],
+        )),
+    );
+    // Browser: D on a directory diffs everything under it.
+    state.handle_input_bytes(b"j");
+    let dir_diff = only_request(&state.handle_input_bytes(b"D"));
+    let Method::GitDiff(params) = &dir_diff.method else {
+        panic!("expected git.diff, got {:?}", dir_diff.method);
+    };
+    assert_eq!(params.path, "/repo/src");
+    assert!(!params.staged);
+    state.handle_endpoint_result(
+        "boot-1",
+        &dir_diff.id,
+        Ok(ResponseResult::GitDiff {
+            diff: crate::api::schema::GitDiffInfo {
+                path: "/repo/src".into(),
+                repo_root: "/repo".into(),
+                text: String::new(),
+                truncated: false,
+            },
+        }),
+    );
+    assert!(screen(&mut state).contains("no changes"));
+    state.handle_input_bytes(b"\x1b");
+
+    // View a file, then diff it.
+    state.handle_input_bytes(b"j");
+    let read = only_request(&state.handle_input_bytes(b"\r"));
+    state.handle_endpoint_result("boot-1", &read.id, Ok(content("/repo/notes.txt", "new\n")));
+    let diff = only_request(&state.handle_input_bytes(b"D"));
+    assert!(matches!(&diff.method, Method::GitDiff(params) if params.path == "/repo/notes.txt"));
+    let text = "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-old\n+new\n";
+    state.handle_endpoint_result(
+        "boot-1",
+        &diff.id,
+        Ok(ResponseResult::GitDiff {
+            diff: crate::api::schema::GitDiffInfo {
+                path: "/repo/notes.txt".into(),
+                repo_root: "/repo".into(),
+                text: text.into(),
+                truncated: false,
+            },
+        }),
+    );
+    let shown = screen(&mut state);
+    assert!(shown.contains("work tree vs HEAD"), "{shown}");
+    assert!(shown.contains("@@ -1 +1 @@"), "{shown}");
+    assert!(shown.contains("-old") && shown.contains("+new"), "{shown}");
+
+    let staged = only_request(&state.handle_input_bytes(b"s"));
+    assert!(matches!(&staged.method, Method::GitDiff(params) if params.staged));
+
+    // Esc returns to the document the diff came from.
+    state.handle_input_bytes(b"\x1b");
+    let Some(ClientShellOverlay::FileViewer(viewer)) = &state.overlay else {
+        panic!("viewer open");
+    };
+    assert_eq!(viewer.mode, super::super::file_viewer::FileViewerMode::View);
+}

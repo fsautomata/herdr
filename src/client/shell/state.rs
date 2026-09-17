@@ -656,6 +656,9 @@ pub(super) enum PendingEndpointKind {
     FileViewerWrite {
         serial: u64,
     },
+    FileViewerDiff {
+        serial: u64,
+    },
     PaneLinkActivate {
         pane_id: String,
         inner_rect: Rect,

@@ -495,6 +495,7 @@ impl ClientShellState {
             PendingEndpointKind::FileViewerList { .. }
                 | PendingEndpointKind::FileViewerRead { .. }
                 | PendingEndpointKind::FileViewerWrite { .. }
+                | PendingEndpointKind::FileViewerDiff { .. }
         ) {
             // File viewer errors are shown inside the overlay, not as endpoint notices.
             return self.complete_file_viewer_request(pending.kind, result);

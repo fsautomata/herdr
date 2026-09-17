@@ -530,6 +530,7 @@ impl ClientShellState {
                 | PendingEndpointKind::FileViewerList { .. }
                 | PendingEndpointKind::FileViewerRead { .. }
                 | PendingEndpointKind::FileViewerWrite { .. }
+                | PendingEndpointKind::FileViewerDiff { .. }
                 | PendingEndpointKind::ProductAnnouncementDismiss { .. }
                 | PendingEndpointKind::ReleaseNotesDismiss
                 | PendingEndpointKind::PopupCommand

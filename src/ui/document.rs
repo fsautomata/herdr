@@ -29,6 +29,10 @@ pub(crate) struct DocStyle {
     /// De-emphasized text (raw HTML, line numbers, image labels).
     pub(crate) dim: bool,
     pub(crate) table_header: bool,
+    /// Unified diff line kinds.
+    pub(crate) diff_add: bool,
+    pub(crate) diff_del: bool,
+    pub(crate) diff_hunk: bool,
 }
 
 /// Where a span's text lives.
@@ -189,6 +193,36 @@ impl Doc {
                 line
             })
             .collect();
+        Self { lines }
+    }
+
+    /// A unified diff: one character-wrapped line per diff line, styled by its prefix.
+    pub(crate) fn diff(text: &str) -> Self {
+        let mut lines = Vec::new();
+        let mut start = 0;
+        for piece in text.split_inclusive('\n') {
+            let content = piece.trim_end_matches(['\n', '\r']);
+            let range = start..start + content.len();
+            start += piece.len();
+            let header = content.starts_with("diff --git")
+                || content.starts_with("index ")
+                || content.starts_with("--- ")
+                || content.starts_with("+++ ")
+                || content.starts_with("new file mode")
+                || content.starts_with("deleted file mode");
+            let style = DocStyle {
+                diff_hunk: content.starts_with("@@"),
+                diff_add: !header && content.starts_with('+'),
+                diff_del: !header && content.starts_with('-'),
+                dim: header,
+                bold: content.starts_with("diff --git"),
+                ..DocStyle::default()
+            };
+            let mut line = DocLine::new(LineKind::Code, range.clone());
+            line.wrap = WrapMode::Char;
+            line.spans = vec![DocSpan::source(range, style)];
+            lines.push(line);
+        }
         Self { lines }
     }
 
@@ -405,6 +439,21 @@ mod tests {
         assert_eq!(counts, [1, 3]);
         let rows = layout_line(source, &doc.lines[1], 15);
         assert!(row_texts(&rows)[0].starts_with("  2  second"));
+    }
+
+    #[test]
+    fn diff_lines_are_styled_by_prefix() {
+        let text = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n context\n";
+        let doc = Doc::diff(text);
+        let style = |index: usize| doc.lines[index].spans[0].style;
+        assert!(style(0).bold && style(0).dim);
+        assert!(style(1).dim && !style(1).diff_del);
+        assert!(style(2).dim && !style(2).diff_add);
+        assert!(style(3).diff_hunk);
+        assert!(style(4).diff_del);
+        assert!(style(5).diff_add);
+        assert_eq!(style(6), DocStyle::default());
+        assert_eq!(doc.lines[5].spans[0].as_str(text), "+new");
     }
 
     #[test]
