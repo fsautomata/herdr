@@ -13,8 +13,9 @@ use sha2::{Digest, Sha256};
 
 use crate::api::schema::{
     ErrorBody, ErrorResponse, FileContentInfo, FileEntryInfo, FileEntryKind, FileListParams,
-    FileReadParams, Method, Request, ResponseResult, SuccessResponse, FILE_LIST_MAX_ENTRIES,
-    FILE_READ_DEFAULT_MAX_BYTES, FILE_READ_MAX_BYTES_LIMIT,
+    FileReadParams, FileWriteInfo, FileWriteParams, GitDiffInfo, GitDiffParams, Method, Request,
+    ResponseResult, SuccessResponse, FILE_LIST_MAX_ENTRIES, FILE_READ_DEFAULT_MAX_BYTES,
+    FILE_READ_MAX_BYTES_LIMIT, FILE_WRITE_MAX_BYTES, GIT_DIFF_MAX_BYTES,
 };
 
 /// Bytes inspected for a NUL byte when deciding whether a file is binary.
@@ -22,7 +23,10 @@ const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
 /// Whether `method` is served by this module.
 pub(crate) fn is_file_method(method: &Method) -> bool {
-    matches!(method, Method::FileList(_) | Method::FileRead(_))
+    matches!(
+        method,
+        Method::FileList(_) | Method::FileRead(_) | Method::FileWrite(_) | Method::GitDiff(_)
+    )
 }
 
 /// Serve a file access request on a worker thread and send the JSON response to `respond_to`.
@@ -50,6 +54,8 @@ pub(crate) fn handle_request(request: Request) -> String {
     let result = match request.method {
         Method::FileList(params) => list_dir(&params),
         Method::FileRead(params) => read_file(&params),
+        Method::FileWrite(params) => write_file(&params),
+        Method::GitDiff(params) => git_diff(&params),
         _ => Err(FileError::new(
             "invalid_request",
             "not a file access method".to_owned(),
@@ -247,6 +253,192 @@ fn content_info(path: String, size: u64, mut bytes: Vec<u8>, truncated: bool) ->
         text: Some(text),
         sha256,
     }
+}
+
+pub(crate) fn write_file(params: &FileWriteParams) -> Result<ResponseResult, FileError> {
+    let requested = require_absolute(&params.path)?;
+    if params.text.len() > FILE_WRITE_MAX_BYTES {
+        return Err(FileError::new(
+            "too_large",
+            format!(
+                "{}: {} bytes exceeds the {} byte write limit",
+                params.path,
+                params.text.len(),
+                FILE_WRITE_MAX_BYTES
+            ),
+        ));
+    }
+    let existing = match fs::canonicalize(requested) {
+        Ok(path) => Some(path),
+        Err(err) if err.kind() == io::ErrorKind::NotFound && params.create => None,
+        Err(err) => return Err(FileError::io(&params.path, &err)),
+    };
+    let target = match &existing {
+        Some(path) => {
+            let metadata = fs::metadata(path).map_err(|err| FileError::io(&params.path, &err))?;
+            if !metadata.is_file() {
+                return Err(FileError::new(
+                    "not_a_file",
+                    format!("{}: not a regular file", params.path),
+                ));
+            }
+            if let Some(expected) = &params.expected_sha256 {
+                let current = fs::read(path).map_err(|err| FileError::io(&params.path, &err))?;
+                let current = format!("{:x}", Sha256::digest(&current));
+                if !current.eq_ignore_ascii_case(expected.trim()) {
+                    return Err(FileError::new(
+                        "stale_content",
+                        format!("{} changed since it was read", params.path),
+                    ));
+                }
+            }
+            path.clone()
+        }
+        None => {
+            if params.expected_sha256.is_some() {
+                return Err(FileError::new(
+                    "stale_content",
+                    format!("{} no longer exists", params.path),
+                ));
+            }
+            let parent = requested.parent().ok_or_else(|| {
+                FileError::new(
+                    "invalid_path",
+                    format!("{}: no parent directory", params.path),
+                )
+            })?;
+            let parent =
+                fs::canonicalize(parent).map_err(|err| FileError::io(&params.path, &err))?;
+            match requested.file_name() {
+                Some(name) => parent.join(name),
+                None => {
+                    return Err(FileError::new(
+                        "invalid_path",
+                        format!("{}: no file name", params.path),
+                    ))
+                }
+            }
+        }
+    };
+    replace_atomically(&target, params.text.as_bytes(), existing.is_some())
+        .map_err(|err| FileError::io(&params.path, &err))?;
+    Ok(ResponseResult::FileWritten {
+        file: FileWriteInfo {
+            path: target.to_string_lossy().into_owned(),
+            size: params.text.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(params.text.as_bytes())),
+        },
+    })
+}
+
+/// Write `bytes` to a temporary sibling, flush it, copy the original permissions, then rename it
+/// over `target`, so readers never observe a partially written file.
+fn replace_atomically(target: &Path, bytes: &[u8], preserve_permissions: bool) -> io::Result<()> {
+    use std::io::Write;
+
+    let dir = target
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no parent directory"))?;
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let temp = dir.join(format!(".{name}.hpp-write-{}-{nanos}", std::process::id()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        if preserve_permissions {
+            if let Ok(metadata) = fs::metadata(target) {
+                fs::set_permissions(&temp, metadata.permissions())?;
+            }
+        }
+        fs::rename(&temp, target)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
+pub(crate) fn git_diff(params: &GitDiffParams) -> Result<ResponseResult, FileError> {
+    let requested = require_absolute(&params.path)?;
+    let path = fs::canonicalize(requested).map_err(|err| FileError::io(&params.path, &err))?;
+    let dir = if path.is_dir() {
+        path.clone()
+    } else {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| path.clone())
+    };
+    let toplevel = git_output(&dir, &["rev-parse", "--show-toplevel"]).map_err(|message| {
+        FileError::new(
+            "not_a_git_repository",
+            format!("{}: {message}", params.path),
+        )
+    })?;
+    let repo_root = toplevel.trim_end().to_owned();
+    let mut args = vec!["diff", "--no-color", "--no-ext-diff"];
+    if params.staged {
+        args.push("--cached");
+    } else {
+        args.push("HEAD");
+    }
+    let path_arg = path.to_string_lossy().into_owned();
+    args.push("--");
+    args.push(&path_arg);
+    let mut text = match git_output(&dir, &args) {
+        Ok(text) => text,
+        // A repository without commits has no HEAD; fall back to the index diff.
+        Err(_) if !params.staged => git_output(
+            &dir,
+            &["diff", "--no-color", "--no-ext-diff", "--", &path_arg],
+        )
+        .map_err(|message| FileError::new("git_error", message))?,
+        Err(message) => return Err(FileError::new("git_error", message)),
+    };
+    let truncated = text.len() > GIT_DIFF_MAX_BYTES;
+    if truncated {
+        let mut cut = GIT_DIFF_MAX_BYTES;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+    }
+    Ok(ResponseResult::GitDiff {
+        diff: GitDiffInfo {
+            path: path.to_string_lossy().into_owned(),
+            repo_root,
+            text,
+            truncated,
+        },
+    })
+}
+
+fn git_output(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let output = crate::noninteractive_process::command("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|err| format!("failed to run git: {err}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(stderr
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("git failed")
+            .to_owned());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn encode_success(id: String, result: ResponseResult) -> String {
@@ -460,6 +652,151 @@ mod tests {
         assert_eq!(err(dir.0.to_string_lossy().into_owned()), "is_a_directory");
         assert_eq!(err(dir.path("missing")), "not_found");
         assert_eq!(err("notes.md".into()), "invalid_path");
+    }
+
+    fn sha(text: &str) -> String {
+        format!("{:x}", Sha256::digest(text.as_bytes()))
+    }
+
+    #[test]
+    fn write_replaces_content_when_the_hash_matches() {
+        let dir = TempDir::new("write");
+        fs::write(dir.0.join("doc.md"), "old\n").unwrap();
+        let result = write_file(&FileWriteParams {
+            path: dir.path("doc.md"),
+            text: "new ✓\n".into(),
+            expected_sha256: Some(sha("old\n")),
+            create: false,
+        })
+        .unwrap();
+        let ResponseResult::FileWritten { file } = result else {
+            panic!("expected written result");
+        };
+        assert_eq!(file.sha256, sha("new ✓\n"));
+        assert_eq!(fs::read_to_string(dir.0.join("doc.md")).unwrap(), "new ✓\n");
+        let leftovers: Vec<_> = fs::read_dir(&dir.0)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains("hpp-write"))
+            .collect();
+        assert!(leftovers.is_empty(), "temporary files must not remain");
+    }
+
+    #[test]
+    fn write_refuses_stale_content_and_leaves_the_file_alone() {
+        let dir = TempDir::new("stale");
+        fs::write(dir.0.join("doc.md"), "agent edited this\n").unwrap();
+        let err = write_file(&FileWriteParams {
+            path: dir.path("doc.md"),
+            text: "human overwrite\n".into(),
+            expected_sha256: Some(sha("what the human read\n")),
+            create: false,
+        })
+        .unwrap_err();
+        assert_eq!(err.code, "stale_content");
+        assert_eq!(
+            fs::read_to_string(dir.0.join("doc.md")).unwrap(),
+            "agent edited this\n"
+        );
+    }
+
+    #[test]
+    fn write_creates_only_when_asked() {
+        let dir = TempDir::new("create");
+        let params = |create| FileWriteParams {
+            path: dir.path("fresh.md"),
+            text: "hello".into(),
+            expected_sha256: None,
+            create,
+        };
+        assert_eq!(write_file(&params(false)).unwrap_err().code, "not_found");
+        write_file(&params(true)).unwrap();
+        assert_eq!(fs::read_to_string(dir.0.join("fresh.md")).unwrap(), "hello");
+        assert_eq!(
+            write_file(&FileWriteParams {
+                path: "relative.md".into(),
+                text: String::new(),
+                expected_sha256: None,
+                create: true,
+            })
+            .unwrap_err()
+            .code,
+            "invalid_path"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_preserves_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("perms");
+        let path = dir.0.join("script.sh");
+        fs::write(&path, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o750)).unwrap();
+        write_file(&FileWriteParams {
+            path: dir.path("script.sh"),
+            text: "#!/bin/sh\necho hi\n".into(),
+            expected_sha256: None,
+            create: false,
+        })
+        .unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o750);
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn git_diff_reports_work_tree_and_staged_changes() {
+        let dir = TempDir::new("git");
+        git(&dir.0, &["init", "-q"]);
+        fs::write(dir.0.join("a.md"), "one\n").unwrap();
+        git(&dir.0, &["add", "a.md"]);
+        git(&dir.0, &["commit", "-q", "-m", "init"]);
+        fs::write(dir.0.join("a.md"), "one\ntwo\n").unwrap();
+
+        let ResponseResult::GitDiff { diff } = git_diff(&GitDiffParams {
+            path: dir.path("a.md"),
+            staged: false,
+        })
+        .unwrap() else {
+            panic!("expected diff");
+        };
+        assert_eq!(diff.repo_root, dir.0.to_string_lossy());
+        assert!(diff.text.contains("+two"), "{}", diff.text);
+
+        let ResponseResult::GitDiff { diff } = git_diff(&GitDiffParams {
+            path: dir.path("a.md"),
+            staged: true,
+        })
+        .unwrap() else {
+            panic!("expected diff");
+        };
+        assert!(diff.text.is_empty(), "nothing staged yet: {}", diff.text);
+    }
+
+    #[test]
+    fn git_diff_outside_a_repository_is_a_clear_error() {
+        let dir = TempDir::new("nogit");
+        fs::write(dir.0.join("a.md"), "x").unwrap();
+        let err = git_diff(&GitDiffParams {
+            path: dir.path("a.md"),
+            staged: false,
+        })
+        .unwrap_err();
+        assert_eq!(err.code, "not_a_git_repository");
     }
 
     #[test]

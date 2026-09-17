@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::agents::AgentInfo;
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
 use super::events::EventEnvelope;
-use super::files::{FileContentInfo, FileEntryInfo};
+use super::files::{FileContentInfo, FileEntryInfo, FileWriteInfo, GitDiffInfo};
 use super::integrations::{
     IntegrationInstallResult, IntegrationTarget, IntegrationUninstallResult,
 };
@@ -77,6 +77,12 @@ pub enum ResponseResult {
     },
     FileContent {
         file: FileContentInfo,
+    },
+    FileWritten {
+        file: FileWriteInfo,
+    },
+    GitDiff {
+        diff: GitDiffInfo,
     },
     WorktreeCreated {
         workspace: WorkspaceInfo,

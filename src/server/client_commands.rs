@@ -17,6 +17,8 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "command.invoke",
     "file.list",
     "file.read",
+    "file.write",
+    "git.diff",
     "integration.install",
     "integration.list",
     "layout.set_split_ratio",
@@ -302,6 +304,14 @@ mod tests {
         assert_eq!(
             actual.remove("file.read").as_deref(),
             Some("2f79511c9e07fd90749bbe5fc4bacaec874c78d53642ed7226d07952de5f4662")
+        );
+        assert_eq!(
+            actual.remove("file.write").as_deref(),
+            Some("3f3e254604c835260eafdf57204a28b56412b1c91a0c9f1c016616215fa7f80c")
+        );
+        assert_eq!(
+            actual.remove("git.diff").as_deref(),
+            Some("ce19e8f295e6b2e1225665bc4fecf638b176a150f64d43605441bea1d1309e81")
         );
 
         assert_eq!(

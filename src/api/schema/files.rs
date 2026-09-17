@@ -11,6 +11,10 @@ pub const FILE_READ_DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024;
 pub const FILE_READ_MAX_BYTES_LIMIT: u64 = 8 * 1024 * 1024;
 /// Maximum number of entries returned by `file.list`.
 pub const FILE_LIST_MAX_ENTRIES: usize = 5000;
+/// Largest text accepted by `file.write`.
+pub const FILE_WRITE_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Largest diff returned by `git.diff`.
+pub const GIT_DIFF_MAX_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct FileListParams {
@@ -73,4 +77,49 @@ pub struct FileContentInfo {
     pub text: Option<String>,
     /// Lowercase hex SHA-256 of the returned bytes (the whole file unless truncated).
     pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct FileWriteParams {
+    /// Absolute path of the file to write.
+    pub path: String,
+    /// Full new UTF-8 content of the file.
+    pub text: String,
+    /// Only write if the file's current SHA-256 (lowercase hex) matches; otherwise fail with
+    /// `stale_content` so the caller can re-read and retry. Omit to overwrite unconditionally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_sha256: Option<String>,
+    /// Create the file when it does not exist.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub create: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FileWriteInfo {
+    /// Canonical absolute path that was written.
+    pub path: String,
+    pub size: u64,
+    /// Lowercase hex SHA-256 of the written content.
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct GitDiffParams {
+    /// Absolute path of a file or directory inside a git work tree.
+    pub path: String,
+    /// Diff the staged changes (index vs HEAD) instead of the work tree vs HEAD.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub staged: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GitDiffInfo {
+    /// Canonical absolute path that was diffed.
+    pub path: String,
+    /// Top level of the git work tree.
+    pub repo_root: String,
+    /// Unified diff text (empty when there are no changes).
+    pub text: String,
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub truncated: bool,
 }

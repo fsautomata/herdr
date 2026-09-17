@@ -2182,6 +2182,50 @@
           ],
           "type": "object"
         },
+        "FileWriteParams": {
+          "properties": {
+            "create": {
+              "description": "Create the file when it does not exist.",
+              "type": "boolean"
+            },
+            "expected_sha256": {
+              "description": "Only write if the file's current SHA-256 (lowercase hex) matches; otherwise fail with\n`stale_content` so the caller can re-read and retry. Omit to overwrite unconditionally.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "Absolute path of the file to write.",
+              "type": "string"
+            },
+            "text": {
+              "description": "Full new UTF-8 content of the file.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "text"
+          ],
+          "type": "object"
+        },
+        "GitDiffParams": {
+          "properties": {
+            "path": {
+              "description": "Absolute path of a file or directory inside a git work tree.",
+              "type": "string"
+            },
+            "staged": {
+              "description": "Diff the staged changes (index vs HEAD) instead of the work tree vs HEAD.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
         "IntegrationInstallParams": {
           "properties": {
             "target": {
@@ -5203,6 +5247,38 @@
         {
           "properties": {
             "method": {
+              "const": "file.write",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FileWriteParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "git.diff",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/GitDiffParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "worktree.create",
               "type": "string"
             },
@@ -7706,6 +7782,54 @@
           ],
           "type": "string"
         },
+        "FileWriteInfo": {
+          "properties": {
+            "path": {
+              "description": "Canonical absolute path that was written.",
+              "type": "string"
+            },
+            "sha256": {
+              "description": "Lowercase hex SHA-256 of the written content.",
+              "type": "string"
+            },
+            "size": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "size",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "GitDiffInfo": {
+          "properties": {
+            "path": {
+              "description": "Canonical absolute path that was diffed.",
+              "type": "string"
+            },
+            "repo_root": {
+              "description": "Top level of the git work tree.",
+              "type": "string"
+            },
+            "text": {
+              "description": "Unified diff text (empty when there are no changes).",
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path",
+            "repo_root",
+            "text"
+          ],
+          "type": "object"
+        },
         "InstalledPluginInfo": {
           "properties": {
             "actions": {
@@ -9559,6 +9683,38 @@
               "required": [
                 "type",
                 "file"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "file": {
+                  "$ref": "#/schemas/success_response/$defs/FileWriteInfo"
+                },
+                "type": {
+                  "const": "file_written",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "file"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "diff": {
+                  "$ref": "#/schemas/success_response/$defs/GitDiffInfo"
+                },
+                "type": {
+                  "const": "git_diff",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "diff"
               ],
               "type": "object"
             },

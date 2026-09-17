@@ -410,6 +410,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::WorktreeList(_) => "worktree.list",
         Method::FileList(_) => "file.list",
         Method::FileRead(_) => "file.read",
+        Method::FileWrite(_) => "file.write",
+        Method::GitDiff(_) => "git.diff",
         Method::WorktreeCreate(_) => "worktree.create",
         Method::WorktreeOpen(_) => "worktree.open",
         Method::WorktreeRemove(_) => "worktree.remove",

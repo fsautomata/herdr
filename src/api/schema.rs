@@ -99,6 +99,10 @@ pub enum Method {
     FileList(FileListParams),
     #[serde(rename = "file.read")]
     FileRead(FileReadParams),
+    #[serde(rename = "file.write")]
+    FileWrite(FileWriteParams),
+    #[serde(rename = "git.diff")]
+    GitDiff(GitDiffParams),
     #[serde(rename = "worktree.create")]
     WorktreeCreate(WorktreeCreateParams),
     #[serde(rename = "worktree.open")]
