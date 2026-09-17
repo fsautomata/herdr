@@ -442,6 +442,9 @@ impl ClientShellState {
     }
 
     pub(super) fn insert_overlay_text(&mut self, text: &str) -> bool {
+        if self.insert_file_viewer_text(text) {
+            return true;
+        }
         if self.insert_worktree_overlay_text(text) {
             return true;
         }
@@ -474,6 +477,9 @@ impl ClientShellState {
     ) {
         use crossterm::event::KeyModifiers;
 
+        if self.route_file_viewer_key(key, outcome) {
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::Onboarding)) {
             if matches!(
                 key.code,

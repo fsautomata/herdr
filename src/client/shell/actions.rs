@@ -43,6 +43,10 @@ impl ClientShellState {
                     self.begin_worktree_action(action, outcome);
                     return;
                 }
+                if action == crate::input::KeybindAction::OpenFileViewer {
+                    self.open_file_viewer(outcome);
+                    return;
+                }
                 if action == crate::input::KeybindAction::OpenNavigator {
                     self.open_navigator_overlay();
                     outcome.repaint = true;
@@ -485,6 +489,16 @@ impl ClientShellState {
         }
         if let PendingEndpointKind::PaneLinkResolve { target } = pending.kind {
             return self.complete_link_hover(target, result);
+        }
+        if matches!(
+            pending.kind,
+            PendingEndpointKind::FileViewerList { .. } | PendingEndpointKind::FileViewerRead { .. }
+        ) {
+            // File viewer errors are shown inside the overlay, not as endpoint notices.
+            return (
+                self.complete_file_viewer_request(pending.kind, result),
+                Vec::new(),
+            );
         }
         if result.is_ok() {
             let timeout_key = ClientEndpointNoticeKey {

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::agents::AgentInfo;
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
 use super::events::EventEnvelope;
+use super::files::{FileContentInfo, FileEntryInfo};
 use super::integrations::{
     IntegrationInstallResult, IntegrationTarget, IntegrationUninstallResult,
 };
@@ -65,6 +66,17 @@ pub enum ResponseResult {
     WorktreeList {
         source: WorktreeSourceInfo,
         worktrees: Vec<WorktreeInfo>,
+    },
+    FileList {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
+        entries: Vec<FileEntryInfo>,
+        #[serde(default)]
+        truncated: bool,
+    },
+    FileContent {
+        file: FileContentInfo,
     },
     WorktreeCreated {
         workspace: WorkspaceInfo,

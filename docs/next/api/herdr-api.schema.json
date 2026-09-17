@@ -2145,6 +2145,43 @@
           ],
           "type": "object"
         },
+        "FileListParams": {
+          "properties": {
+            "path": {
+              "description": "Absolute path of the directory to list.",
+              "type": "string"
+            },
+            "show_hidden": {
+              "description": "Include entries whose name starts with a dot.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "FileReadParams": {
+          "properties": {
+            "max_bytes": {
+              "description": "Maximum bytes to return; defaults to 2 MiB and is capped at 8 MiB.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "Absolute path of the file to read.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
         "IntegrationInstallParams": {
           "properties": {
             "target": {
@@ -5134,6 +5171,38 @@
         {
           "properties": {
             "method": {
+              "const": "file.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FileListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "file.read",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/FileReadParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "worktree.create",
               "type": "string"
             },
@@ -7558,6 +7627,85 @@
           ],
           "type": "string"
         },
+        "FileContentInfo": {
+          "properties": {
+            "binary": {
+              "description": "The file looks binary (a NUL byte in its first 8 KiB); no text is returned.",
+              "type": "boolean"
+            },
+            "lossy": {
+              "description": "The bytes were not valid UTF-8 and were decoded lossily.",
+              "type": "boolean"
+            },
+            "path": {
+              "description": "Canonical absolute path that was read.",
+              "type": "string"
+            },
+            "sha256": {
+              "description": "Lowercase hex SHA-256 of the returned bytes (the whole file unless truncated).",
+              "type": "string"
+            },
+            "size": {
+              "description": "Size of the whole file in bytes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "description": "Text content; absent for binary files.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "truncated": {
+              "description": "Only the first `max_bytes` were returned.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path",
+            "size",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "FileEntryInfo": {
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/FileEntryKind"
+            },
+            "name": {
+              "type": "string"
+            },
+            "size": {
+              "default": 0,
+              "description": "Size in bytes for files (and symlinks to files).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "target_is_dir": {
+              "description": "For symlinks: the target is a directory.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name",
+            "kind"
+          ],
+          "type": "object"
+        },
+        "FileEntryKind": {
+          "enum": [
+            "file",
+            "directory",
+            "symlink",
+            "other",
+            "unknown"
+          ],
+          "type": "string"
+        },
         "InstalledPluginInfo": {
           "properties": {
             "actions": {
@@ -9362,6 +9510,55 @@
                 "type",
                 "source",
                 "worktrees"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "entries": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/FileEntryInfo"
+                  },
+                  "type": "array"
+                },
+                "parent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "truncated": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "file_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "path",
+                "entries"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "file": {
+                  "$ref": "#/schemas/success_response/$defs/FileContentInfo"
+                },
+                "type": {
+                  "const": "file_content",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "file"
               ],
               "type": "object"
             },

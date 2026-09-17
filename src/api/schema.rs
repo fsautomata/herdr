@@ -4,6 +4,7 @@ pub mod agents;
 pub mod commands;
 pub mod common;
 pub mod events;
+pub mod files;
 pub mod integrations;
 pub mod panes;
 pub mod plugins;
@@ -18,6 +19,7 @@ pub use agents::*;
 pub use commands::*;
 pub use common::*;
 pub use events::*;
+pub use files::*;
 pub use integrations::*;
 pub use panes::*;
 pub use plugins::*;
@@ -93,6 +95,10 @@ pub enum Method {
     WorkspaceClose(WorkspaceCloseParams),
     #[serde(rename = "worktree.list")]
     WorktreeList(WorktreeListParams),
+    #[serde(rename = "file.list")]
+    FileList(FileListParams),
+    #[serde(rename = "file.read")]
+    FileRead(FileReadParams),
     #[serde(rename = "worktree.create")]
     WorktreeCreate(WorktreeCreateParams),
     #[serde(rename = "worktree.open")]

@@ -3092,6 +3092,10 @@ impl HeadlessServer {
                 .handle_deferred_agent_api_request(msg.request, msg.respond_to);
             return changed | deferred_changed;
         }
+        if crate::file_access::is_file_method(&msg.request.method) {
+            crate::file_access::spawn_request(msg.request, msg.respond_to);
+            return changed;
+        }
         if matches!(
             &msg.request.method,
             api::schema::Method::WorktreeCreate(_) | api::schema::Method::WorktreeRemove(_)

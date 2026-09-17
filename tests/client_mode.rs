@@ -2150,3 +2150,102 @@ fn client_receives_notify_on_agent_state_change() {
 
     cleanup_spawned_herdr(spawned, base);
 }
+
+/// hpp fork: prefix+f opens the file viewer, which lists and reads files through the server's
+/// `file.list` / `file.read` methods from a real client shell process.
+#[test]
+fn file_viewer_browses_and_reads_files_through_the_server() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+    let files = base.join("viewer-files");
+    fs::create_dir_all(files.join("nested")).unwrap();
+    fs::write(
+        files.join("VIEWER_NOTES.md"),
+        "# Viewer heading\nVIEWER_BODY_LINE\n",
+    )
+    .unwrap();
+
+    let server = spawn_server(&config_home, &runtime_dir, &api_socket, &client_socket);
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_socket(&client_socket, Duration::from_secs(10));
+    let created = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "file-viewer-workspace",
+            "method": "workspace.create",
+            "params": {"cwd": files, "focus": true, "label": "viewer-space"},
+        })
+        .to_string(),
+    );
+    assert_eq!(created["result"]["type"], "workspace_created", "{created}");
+
+    let client = spawn_client_shell_process(&config_home, &runtime_dir, &api_socket);
+    let master = client._master.as_ref().expect("client shell PTY");
+    let output = spawn_pty_drain(master.try_clone_reader().expect("clone client reader"));
+    let mut writer = master.take_writer().expect("client shell writer");
+    let screen = || {
+        let bytes = output
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .bytes
+            .clone();
+        terminal_screen::text(&bytes, 80, 24)
+    };
+    assert!(
+        wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
+            screen().contains("viewer-space")
+        }),
+        "client shell should attach; screen:\n{}",
+        screen()
+    );
+
+    // ctrl+b is the default prefix.
+    writer.write_all(b"\x02f").unwrap();
+    assert!(
+        wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
+            let text = screen();
+            text.contains("VIEWER_NOTES.md") && text.contains("nested/")
+        }),
+        "file viewer should list the pane directory; screen:\n{}",
+        screen()
+    );
+
+    // Rows are `..`, `nested/`, `VIEWER_NOTES.md`.
+    writer.write_all(b"jj").unwrap();
+    thread::sleep(Duration::from_millis(100));
+    writer.write_all(b"\r").unwrap();
+    assert!(
+        wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
+            let text = screen();
+            text.contains("VIEWER_BODY_LINE") && text.contains("# Viewer heading")
+        }),
+        "file viewer should show the file content; screen:\n{}",
+        screen()
+    );
+
+    writer.write_all(b"q").unwrap();
+    assert!(
+        wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
+            let text = screen();
+            text.contains("nested/") && !text.contains("VIEWER_BODY_LINE")
+        }),
+        "q should return to the listing; screen:\n{}",
+        screen()
+    );
+    writer.write_all(b"q").unwrap();
+    assert!(
+        wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
+            !screen().contains("VIEWER_NOTES.md")
+        }),
+        "q in the listing should close the viewer; screen:\n{}",
+        screen()
+    );
+
+    drop(writer);
+    drop(server);
+    cleanup_spawned_herdr(client, base);
+}

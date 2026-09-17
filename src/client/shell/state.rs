@@ -136,6 +136,7 @@ pub(super) struct ShellHitMap {
     pub(super) release_notes_scrollbar: Rect,
     pub(super) release_notes_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) release_notes_max_scroll: usize,
+    pub(super) file_viewer: Option<super::file_viewer::FileViewerHits>,
 }
 
 #[derive(Clone)]
@@ -286,6 +287,7 @@ pub(super) enum ClientShellOverlayKind {
     ContextMenu,
     GlobalMenu,
     Settings,
+    FileViewer,
 }
 
 #[derive(Debug)]
@@ -582,6 +584,7 @@ pub(super) enum ClientShellOverlay {
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
+    FileViewer(super::file_viewer::ClientFileViewerOverlay),
 }
 
 impl ClientShellOverlay {
@@ -600,6 +603,7 @@ impl ClientShellOverlay {
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
+            Self::FileViewer(_) => ClientShellOverlayKind::FileViewer,
         }
     }
 }
@@ -642,6 +646,12 @@ pub(super) enum PendingEndpointKind {
     },
     PaneLinkResolve {
         target: super::link_hover::LinkHoverTarget,
+    },
+    FileViewerList {
+        serial: u64,
+    },
+    FileViewerRead {
+        serial: u64,
     },
     PaneLinkActivate {
         pane_id: String,

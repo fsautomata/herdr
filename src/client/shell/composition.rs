@@ -666,6 +666,7 @@ impl ClientShellState {
                 self.hits.release_notes_scrollbar = rendered.release_notes_scrollbar;
                 self.hits.release_notes_scroll_metrics = rendered.release_notes_scroll_metrics;
                 self.hits.release_notes_max_scroll = rendered.release_notes_max_scroll;
+                self.hits.file_viewer = rendered.file_viewer;
                 rendered.cursor
             };
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
@@ -673,6 +674,7 @@ impl ClientShellState {
         if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
             help.scroll = help.scroll.min(self.hits.help_max_scroll);
         }
+        self.clamp_file_viewer_scroll();
         if let Some(ClientShellOverlay::ProductAnnouncement(announcement)) = self.overlay.as_mut() {
             announcement.scroll = announcement
                 .scroll

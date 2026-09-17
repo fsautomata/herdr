@@ -542,6 +542,12 @@
           "description": "Open the session navigator."
         },
         {
+          "key": "keys.open_file_viewer",
+          "type": "keybinding",
+          "default": "\"prefix+f\"",
+          "description": "Open the file viewer at the focused pane's directory."
+        },
+        {
           "key": "keys.navigate_workspace_up",
           "type": "keybinding",
           "default": "\"up\"",

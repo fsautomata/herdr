@@ -15,6 +15,8 @@ const ENDPOINT_RESPONSE_CHUNK_BYTES: usize = 512 * 1024;
 const CLIENT_SHELL_METHODS: &[&str] = &[
     "client_shell.surface.set",
     "command.invoke",
+    "file.list",
+    "file.read",
     "integration.install",
     "integration.list",
     "layout.set_split_ratio",
@@ -291,6 +293,15 @@ mod tests {
         assert_eq!(
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
+        );
+        // hpp fork: additive file access methods, frozen here for the same reason.
+        assert_eq!(
+            actual.remove("file.list").as_deref(),
+            Some("e7db53dcb14fc820e08e9b3dab08fa7d25e42f235ebeba65c2ef3b3f7c977a9b")
+        );
+        assert_eq!(
+            actual.remove("file.read").as_deref(),
+            Some("2f79511c9e07fd90749bbe5fc4bacaec874c78d53642ed7226d07952de5f4662")
         );
 
         assert_eq!(

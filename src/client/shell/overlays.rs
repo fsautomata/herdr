@@ -1,5 +1,6 @@
 use super::*;
 
+mod file_viewer_overlay;
 mod settings_overlay;
 mod worktree_overlays;
 
@@ -28,6 +29,7 @@ pub(crate) struct OverlayRender {
     pub(crate) release_notes_scrollbar: Rect,
     pub(crate) release_notes_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(crate) release_notes_max_scroll: usize,
+    pub(crate) file_viewer: Option<crate::client::shell::file_viewer::FileViewerHits>,
     pub(crate) cursor: Option<crate::protocol::CursorState>,
 }
 
@@ -54,6 +56,9 @@ pub(crate) fn render_client_overlay(
         }
     }
     match o {
+        ClientShellOverlay::FileViewer(v) => {
+            file_viewer_overlay::render_file_viewer_overlay(b, v, p)
+        }
         ClientShellOverlay::Onboarding => render_onboarding_overlay(b, p),
         ClientShellOverlay::ProductAnnouncement(v) => render_product_announcement_overlay(b, v, p),
         ClientShellOverlay::ReleaseNotes(v) => {

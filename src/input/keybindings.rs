@@ -69,6 +69,7 @@ pub(crate) enum KeybindAction {
     OpenNotificationTarget,
     Detach,
     OpenNavigator,
+    OpenFileViewer,
 }
 
 pub(crate) fn resolve_direct_binding(
@@ -152,6 +153,7 @@ pub(crate) fn resolve_non_indexed_action(
         ),
         (&keybinds.detach, KeybindAction::Detach),
         (&keybinds.goto, KeybindAction::OpenNavigator),
+        (&keybinds.open_file_viewer, KeybindAction::OpenFileViewer),
     ] {
         if action_matches(bindings, key, dispatch) {
             return Some(action);

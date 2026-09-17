@@ -1029,6 +1029,14 @@ impl App {
                 return self.handle_workspace_close(request.id, target);
             }
             Method::WorktreeList(params) => return self.handle_worktree_list(request.id, params),
+            // The headless server serves file access on a worker thread before requests reach
+            // the app; this synchronous path exists for in-process callers.
+            method @ (Method::FileList(_) | Method::FileRead(_)) => {
+                return crate::file_access::handle_request(crate::api::schema::Request {
+                    id: request.id,
+                    method,
+                });
+            }
             Method::WorktreeCreate(params) => {
                 let _ = params;
                 return responses::encode_error(
