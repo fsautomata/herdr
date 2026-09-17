@@ -51,9 +51,9 @@ impl Harness {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let app = if cfg!(debug_assertions) {
-            "herdr-dev"
+            "hpp-dev"
         } else {
-            "herdr"
+            "hpp"
         };
         let state = root.join("state").join(app).join("client");
         let session = root.join("config").join(app).join("sessions/fleet");
@@ -62,9 +62,9 @@ impl Harness {
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::write(root.join("bin/ssh"), SSH).unwrap();
         fs::set_permissions(root.join("bin/ssh"), fs::Permissions::from_mode(0o700)).unwrap();
-        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_herdr"), root.join("remote herdr")).unwrap();
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_hpp"), root.join("remote hpp")).unwrap();
         fs::create_dir_all(root.join("remote bin")).unwrap();
-        let remote_wrapper = root.join("remote bin/herdr");
+        let remote_wrapper = root.join("remote bin/hpp");
         fs::write(
             &remote_wrapper,
             r#"#!/bin/sh
@@ -89,7 +89,7 @@ exec "$TEST_REMOTE_HERDR" "$@"
         remote.set_nonblocking(true).unwrap();
         let local = UnixListener::bind(root.join("local.sock")).unwrap();
         local.set_nonblocking(true).unwrap();
-        let status = Command::new(env!("CARGO_BIN_EXE_herdr"))
+        let status = Command::new(env!("CARGO_BIN_EXE_hpp"))
             .args(["status", "client", "--json"])
             .output()
             .unwrap();
@@ -104,7 +104,7 @@ exec "$TEST_REMOTE_HERDR" "$@"
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_hpp"));
         command
             .args(args)
             .env(
@@ -116,7 +116,7 @@ exec "$TEST_REMOTE_HERDR" "$@"
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("XDG_RUNTIME_DIR", &self.root)
             .env("TEST_ROOT", &self.root)
-            .env("TEST_REMOTE_HERDR", self.root.join("remote herdr"))
+            .env("TEST_REMOTE_HERDR", self.root.join("remote hpp"))
             .env("HERDR_SOCKET_PATH", self.root.join("local.sock"))
             .env(
                 "HERDR_CLIENT_SOCKET_PATH",
@@ -280,8 +280,8 @@ fn machine_api_bootstrap_falls_back_from_an_old_path_binary() {
     let harness = Harness::new();
     fs::create_dir_all(harness.root.join(".local/bin")).unwrap();
     std::os::unix::fs::symlink(
-        env!("CARGO_BIN_EXE_herdr"),
-        harness.root.join(".local/bin/herdr"),
+        env!("CARGO_BIN_EXE_hpp"),
+        harness.root.join(".local/bin/hpp"),
     )
     .unwrap();
     let server = harness.serve(
@@ -349,11 +349,11 @@ fn machine_api_reuses_discovery_across_commands_without_rewriting_profiles() {
 fn machine_api_recovers_a_stale_path_before_sending_a_mutation() {
     let harness = Harness::new();
     harness.warm_metadata();
-    fs::remove_file(harness.root.join("remote bin/herdr")).unwrap();
+    fs::remove_file(harness.root.join("remote bin/hpp")).unwrap();
     fs::create_dir_all(harness.root.join(".local/bin")).unwrap();
     std::os::unix::fs::symlink(
-        env!("CARGO_BIN_EXE_herdr"),
-        harness.root.join(".local/bin/herdr"),
+        env!("CARGO_BIN_EXE_hpp"),
+        harness.root.join(".local/bin/hpp"),
     )
     .unwrap();
     let before = harness.ssh_calls();

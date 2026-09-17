@@ -2110,6 +2110,14 @@ fn homebrew_cellar_keg_root(path: &Path) -> Option<PathBuf> {
 
 /// Manual self-update command (`herdr update`).
 pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
+    // hpp fork: herdr.dev releases would replace this binary with stock herdr.
+    // Unit tests keep exercising the upstream logic below.
+    if !cfg!(test) {
+        return Err(format!(
+            "self-update is disabled: {}",
+            crate::fork::no_published_releases_message()
+        ));
+    }
     let channel = UpdateChannel::configured();
 
     if is_homebrew_managed_install() {
@@ -2242,6 +2250,11 @@ fn print_outdated_integration_notice_with_updated_binary(updated_exe: &Path) {
 /// Background update check: only surface availability and release notes.
 /// Runs in a background thread at startup.
 pub fn auto_update(events: tokio::sync::mpsc::Sender<crate::events::AppEvent>) {
+    // hpp fork: never offer herdr.dev releases as updates for this binary.
+    if !cfg!(test) {
+        tracing::debug!("automatic update checks are disabled in the hpp fork");
+        return;
+    }
     crate::logging::update_check_started();
     if let Ok(version) = env::var(FAKE_UPDATE_VERSION_ENV) {
         let version = version.trim();

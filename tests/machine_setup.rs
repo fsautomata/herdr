@@ -20,8 +20,8 @@ if [ "$FAKE_STRICT_HOST_KEY_FAILURE" = yes ] && [ "$strict_host_key_check" = yes
     echo 'Host key verification failed.' >&2
     exit 255
 fi
-if [ "$last" = 'command -v herdr' ]; then
-    echo /home/remote/.local/bin/herdr
+if [ "$last" = 'command -v hpp' ]; then
+    echo /home/remote/.local/bin/hpp
     exit 0
 fi
 case "$last" in
@@ -34,7 +34,7 @@ esac
 printf '\n%s\n' 'herdr-remote-output-ready:1'
 case "$script" in
     *'uname -s'*) uname -s; uname -m ;;
-    *'version='*) echo /home/remote/.local/bin/herdr ;;
+    *'version='*) echo /home/remote/.local/bin/hpp ;;
     *'status client --json'*)
         if [ "$FAKE_INSTALLED" = new ] || [ -f "$FAKE_ROOT/installed" ]; then
             printf '%s\n' "$FAKE_CLIENT_STATUS"
@@ -54,7 +54,7 @@ case "$script" in
     *'remote-client-bridge'*) echo start >>"$FAKE_ROOT/actions"; echo 'test startup failure' >&2; exit 1 ;;
     *'mkdir -p'*) printf '/fake/tmp\000/fake/herdr\000' ;;
     *'chmod 755'*) echo install >>"$FAKE_ROOT/actions"; touch "$FAKE_ROOT/installed" ;;
-    *'command -v herdr'*) echo /home/remote/.local/bin/herdr ;;
+    *'command -v hpp'*) echo /home/remote/.local/bin/hpp ;;
     *) echo "unexpected fake SSH script: $script" >&2; exit 1 ;;
 esac
 "#;
@@ -85,7 +85,7 @@ fn setup_with_strict_host_key_failure(
         strict_host_key_failure
     ));
     let app = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "hpp-dev"
     } else {
         "herdr"
     };
@@ -98,14 +98,14 @@ fn setup_with_strict_host_key_failure(
         "onboarding = false\n[remote]\nmanage_ssh_config = false\n",
     )
     .unwrap();
-    let status = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let status = Command::new(env!("CARGO_BIN_EXE_hpp"))
         .args(["status", "client", "--json"])
         .output()
         .unwrap();
     assert!(status.status.success());
 
     let pair = native_pty_system().openpty(PtySize::default()).unwrap();
-    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_hpp"));
     if handoff {
         command.args(["--remote", "fake-host", "--handoff"]);
     } else {
@@ -217,7 +217,7 @@ fn machine_add_accepts_help_argument_order() {
     ));
     fs::create_dir(&root).unwrap();
     let app = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "hpp-dev"
     } else {
         "herdr"
     };
@@ -227,7 +227,7 @@ fn machine_add_accepts_help_argument_order() {
         "onboarding = false\n[remote]\nmanage_ssh_config = false\n",
     )
     .unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hpp"));
     command.args(["machine", "add", "--label", "coder", "workstation.coder"]);
     // Reach remote preparation, but never execute SSH or start a server.
     command.env("PATH", root.join("no-executables"));

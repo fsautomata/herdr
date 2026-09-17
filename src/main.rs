@@ -23,6 +23,7 @@ mod config;
 mod copy_mode;
 mod detect;
 mod events;
+mod fork;
 mod ghostty;
 mod handoff_runtime;
 mod input;
@@ -712,7 +713,7 @@ fn main() -> io::Result<()> {
 
     if args.iter().any(|a| a == "--version" || a == "-V") {
         platform::begin_cli_output();
-        println!("herdr {}", crate::build_info::version());
+        println!("{}", crate::fork::version_label());
         return Ok(());
     }
 

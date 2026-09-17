@@ -20,7 +20,7 @@ impl SshMachineMetadata {
             return false;
         }
         match self.os.as_str() {
-            "linux" | "macos" => path.starts_with('/') && !path.ends_with("/mise/shims/herdr"),
+            "linux" | "macos" => path.starts_with('/') && !path.ends_with("/mise/shims/hpp"),
             "windows" => {
                 let bytes = path.as_bytes();
                 path.starts_with(r"\\")
@@ -129,7 +129,7 @@ mod tests {
             ("windows", r"\\server\share\herdr.exe", true),
             ("windows", "herdr.exe", false),
             ("linux", "$HOME/.local/bin/herdr", false),
-            ("linux", "/home/user/.local/share/mise/shims/herdr", false),
+            ("linux", "/home/user/.local/share/mise/shims/hpp", false),
             ("linux", "/bin/herdr\nmalformed", false),
             ("unknown", "/bin/herdr", false),
         ] {

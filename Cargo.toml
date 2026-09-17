@@ -20,6 +20,12 @@ include = [
     "Cargo.toml",
 ]
 
+# hpp fork: the binary is named `hpp` so it installs alongside stock `herdr`.
+# The crate keeps the `herdr` name to keep the upstream diff small.
+[[bin]]
+name = "hpp"
+path = "src/main.rs"
+
 [dependencies]
 base64 = "0.22.1"
 bincode = { version = "2", features = ["serde"] }

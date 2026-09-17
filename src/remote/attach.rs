@@ -44,7 +44,7 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
     let local_socket = local_forward_socket_path(&remote.target, &session_name);
     let program = std::env::args()
         .next()
-        .unwrap_or_else(|| "herdr".to_string());
+        .unwrap_or_else(|| crate::fork::BIN_NAME.to_string());
     let reattach_command = reattach_command(
         &program,
         &remote.target,
@@ -349,7 +349,7 @@ impl RemoteHerdr {
                 RemoteExecutable::WindowsPath("herdr.exe".to_string()),
             )
         } else {
-            let install_suffix = ".local/bin/herdr".to_string();
+            let install_suffix = ".local/bin/hpp".to_string();
             let shell_path = format!("\"$HOME/{install_suffix}\"");
             (install_suffix, RemoteExecutable::PosixShellPath(shell_path))
         };
@@ -1477,34 +1477,34 @@ emit() {
     fi
 }
 if [ -n "$home" ]; then
-    emit "$home/.local/bin/herdr"
+    emit "$home/.local/bin/hpp"
 fi
 "#,
     );
     if platform.os == "macos" {
         script.push_str(
-            r#"    emit "/opt/homebrew/bin/herdr"
-    emit "/usr/local/bin/herdr"
+            r#"    emit "/opt/homebrew/bin/hpp"
+    emit "/usr/local/bin/hpp"
 "#,
         );
     } else if platform.os == "linux" {
         script.push_str(
-            r#"    emit "/home/linuxbrew/.linuxbrew/bin/herdr"
+            r#"    emit "/home/linuxbrew/.linuxbrew/bin/hpp"
 "#,
         );
     }
     script.push_str(
         r#"if [ -n "$home" ]; then
-    emit "$home/.local/share/mise/installs/herdr/$version/bin/herdr"
-    emit "$home/.local/share/mise/installs/herdr/$version/herdr"
-    emit "$home/.local/share/mise/installs/github-ogulcancelik-herdr/$version/herdr"
-    emit "$home/.nix-profile/bin/herdr"
+    emit "$home/.local/share/mise/installs/hpp/$version/bin/hpp"
+    emit "$home/.local/share/mise/installs/hpp/$version/hpp"
+    emit "$home/.local/share/mise/installs/github-fsautomata-herdr/$version/hpp"
+    emit "$home/.nix-profile/bin/hpp"
 fi
 if [ -n "$user" ]; then
-    emit "/etc/profiles/per-user/$user/bin/herdr"
+    emit "/etc/profiles/per-user/$user/bin/hpp"
 fi
-emit "/nix/var/nix/profiles/default/bin/herdr"
-emit "/run/current-system/sw/bin/herdr"
+emit "/nix/var/nix/profiles/default/bin/hpp"
+emit "/run/current-system/sw/bin/hpp"
 "#,
     );
 
@@ -1515,7 +1515,7 @@ fn remote_binary_on_path_any(
     ssh: &RemoteSsh,
     remote_herdr: &RemoteHerdr,
 ) -> io::Result<Option<RemoteHerdr>> {
-    let output = ssh.posix_user_shell_output("command -v herdr")?;
+    let output = ssh.posix_user_shell_output("command -v hpp")?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Some(candidate) = remote_herdr_from_path_discovery(remote_herdr, &stdout) {
@@ -1525,7 +1525,7 @@ fn remote_binary_on_path_any(
 
     // Non-POSIX login shells such as xonsh reject `command -v`; retry through
     // /bin/sh while retaining the login-shell probe for shell-initialized PATHs.
-    let output = ssh.sh_output("command -v herdr\n")?;
+    let output = ssh.sh_output("command -v hpp\n")?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -1562,7 +1562,7 @@ fn remote_herdr_from_path(remote_herdr: &RemoteHerdr, path: &str) -> Option<Remo
 }
 
 fn is_mise_shim_path(path: &str) -> bool {
-    path.ends_with("/mise/shims/herdr")
+    path.ends_with("/mise/shims/hpp")
 }
 
 fn remote_client_status(
@@ -2205,7 +2205,7 @@ fn version_label(version: Option<&str>) -> &str {
 }
 
 fn warn_if_remote_bin_not_on_path(ssh: &RemoteSsh) -> io::Result<()> {
-    let output = ssh.posix_user_shell_output("command -v herdr")?;
+    let output = ssh.posix_user_shell_output("command -v hpp")?;
     if output.status.success()
         && remote_shell_resolves_managed_install(&String::from_utf8_lossy(&output.stdout))
     {
@@ -2213,7 +2213,7 @@ fn warn_if_remote_bin_not_on_path(ssh: &RemoteSsh) -> io::Result<()> {
     }
 
     eprintln!(
-        "herdr: installed remote binary to ~/.local/bin/herdr, but the remote shell does not resolve `herdr` to that path"
+        "herdr: installed remote binary to ~/.local/bin/hpp, but the remote shell does not resolve `hpp` to that path"
     );
     Ok(())
 }
@@ -2223,7 +2223,7 @@ fn remote_shell_resolves_managed_install(stdout: &str) -> bool {
         .lines()
         .next()
         .map(str::trim)
-        .is_some_and(|path| path.ends_with("/.local/bin/herdr"))
+        .is_some_and(|path| path.ends_with("/.local/bin/hpp"))
 }
 
 fn download_release_asset(platform: &RemotePlatform) -> io::Result<InstallSource> {
@@ -2298,6 +2298,13 @@ fn preview_assets_for_build<'a>(
 }
 
 fn remote_release_asset(asset_key: &str) -> io::Result<RemoteReleaseAsset> {
+    // hpp fork: herdr.dev assets are stock herdr, not hpp. Unit tests keep the upstream logic.
+    if !cfg!(test) {
+        return Err(io::Error::other(format!(
+            "{}; copy an hpp build to the remote (~/.local/bin/hpp) or set {REMOTE_BINARY_ENV_VAR}",
+            crate::fork::no_published_releases_message()
+        )));
+    }
     if crate::build_info::is_preview() {
         let build_id = crate::build_info::build_id().ok_or_else(|| {
             io::Error::other("preview client has no build id; set HERDR_REMOTE_BINARY or install Herdr on the remote manually")
@@ -2434,14 +2441,14 @@ fn posix_remote_api_discovery_command(platform: &RemotePlatform, session: &str) 
     let script = format!(
         r#"set -f
 candidates=$(
-command -v herdr
+command -v hpp
 {discovery}
 )
 IFS='
 '
 for candidate in $candidates; do
     case "$candidate" in
-        */mise/shims/herdr) continue ;;
+        */mise/shims/hpp) continue ;;
         /*) ;;
         *) continue ;;
     esac
@@ -3862,9 +3869,9 @@ mod tests {
 
     #[test]
     fn remote_install_stream_command_avoids_shell_c_wrapper() {
-        let command = remote_install_stream_command("/home/a b/.local/bin/herdr.tmp.123");
+        let command = remote_install_stream_command("/home/a b/.local/bin/hpp.tmp.123");
 
-        assert_eq!(command, "tee '/home/a b/.local/bin/herdr.tmp.123'");
+        assert_eq!(command, "tee '/home/a b/.local/bin/hpp.tmp.123'");
     }
 
     #[test]
@@ -4482,7 +4489,7 @@ mod tests {
             assert_eq!(
                 remote_api_bridge_command(&remote_herdr, session, false),
                 posix_remote_output_command(&format!(
-                    "exec \"$HOME/.local/bin/herdr\" --session {session} remote-api-bridge"
+                    "exec \"$HOME/.local/bin/hpp\" --session {session} remote-api-bridge"
                 ))
             );
         }
@@ -4517,11 +4524,11 @@ mod tests {
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec \"$HOME/.local/bin/herdr\" remote-client-bridge"
+            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec \"$HOME/.local/bin/hpp\" remote-client-bridge"
         );
         assert_eq!(
             remote_herdr.executable.saved_bridge_command("agents"),
-            "exec \"$HOME/.local/bin/herdr\" --session agents remote-client-bridge </dev/null"
+            "exec \"$HOME/.local/bin/hpp\" --session agents remote-client-bridge </dev/null"
         );
     }
 
@@ -4567,14 +4574,14 @@ mod tests {
             arch: "aarch64",
         });
         let remote_herdr =
-            remote_herdr_from_path_discovery(&remote_herdr, "/opt/homebrew/bin/herdr\n")
+            remote_herdr_from_path_discovery(&remote_herdr, "/opt/homebrew/bin/hpp\n")
                 .expect("path binary");
 
         assert_eq!(
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec /opt/homebrew/bin/herdr remote-client-bridge"
+            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec /opt/homebrew/bin/hpp remote-client-bridge"
         );
         assert_eq!(remote_herdr.platform.asset_key(), "macos-aarch64");
     }
@@ -4609,7 +4616,7 @@ mod tests {
         });
         let candidates = remote_herdrs_from_path_discovery(
             &remote_herdr,
-            "/home/can/.local/share/mise/shims/herdr\n/home/can/.local/share/mise/installs/herdr/0.7.1/bin/herdr\n",
+            "/home/can/.local/share/mise/shims/hpp\n/home/can/.local/share/mise/installs/herdr/0.7.1/bin/herdr\n",
         );
 
         assert_eq!(candidates.len(), 1);
@@ -4628,21 +4635,19 @@ mod tests {
             arch: "x86_64",
         });
 
-        assert!(script.contains("emit \"$home/.local/bin/herdr\""));
-        assert!(!script.contains("mise/shims/herdr"));
+        assert!(script.contains("emit \"$home/.local/bin/hpp\""));
+        assert!(!script.contains("mise/shims/hpp"));
         assert!(script.contains(&format!("version={}", shell_quote(&current_version()))));
-        assert!(
-            script.contains("emit \"$home/.local/share/mise/installs/herdr/$version/bin/herdr\"")
-        );
-        assert!(script.contains("emit \"$home/.local/share/mise/installs/herdr/$version/herdr\""));
+        assert!(script.contains("emit \"$home/.local/share/mise/installs/hpp/$version/bin/hpp\""));
+        assert!(script.contains("emit \"$home/.local/share/mise/installs/hpp/$version/hpp\""));
         assert!(script.contains(
-            "emit \"$home/.local/share/mise/installs/github-ogulcancelik-herdr/$version/herdr\""
+            "emit \"$home/.local/share/mise/installs/github-fsautomata-herdr/$version/hpp\""
         ));
-        assert!(script.contains("emit \"$home/.nix-profile/bin/herdr\""));
-        assert!(script.contains("emit \"/etc/profiles/per-user/$user/bin/herdr\""));
-        assert!(script.contains("emit \"/run/current-system/sw/bin/herdr\""));
-        assert!(script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/herdr\""));
-        assert!(!script.contains("emit \"/opt/homebrew/bin/herdr\""));
+        assert!(script.contains("emit \"$home/.nix-profile/bin/hpp\""));
+        assert!(script.contains("emit \"/etc/profiles/per-user/$user/bin/hpp\""));
+        assert!(script.contains("emit \"/run/current-system/sw/bin/hpp\""));
+        assert!(script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/hpp\""));
+        assert!(!script.contains("emit \"/opt/homebrew/bin/hpp\""));
     }
 
     #[test]
@@ -4652,9 +4657,9 @@ mod tests {
             arch: "aarch64",
         });
 
-        assert!(script.contains("emit \"/opt/homebrew/bin/herdr\""));
-        assert!(script.contains("emit \"/usr/local/bin/herdr\""));
-        assert!(!script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/herdr\""));
+        assert!(script.contains("emit \"/opt/homebrew/bin/hpp\""));
+        assert!(script.contains("emit \"/usr/local/bin/hpp\""));
+        assert!(!script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/hpp\""));
     }
 
     #[test]
@@ -4700,13 +4705,13 @@ mod tests {
     #[test]
     fn remote_shell_path_warning_accepts_managed_install() {
         assert!(remote_shell_resolves_managed_install(
-            "/home/can/.local/bin/herdr\n"
+            "/home/can/.local/bin/hpp\n"
         ));
         assert!(remote_shell_resolves_managed_install(
-            "/Users/can/.local/bin/herdr\n"
+            "/Users/can/.local/bin/hpp\n"
         ));
         assert!(!remote_shell_resolves_managed_install(
-            "/usr/local/bin/herdr\n"
+            "/usr/local/bin/hpp\n"
         ));
         assert!(!remote_shell_resolves_managed_install(""));
     }
