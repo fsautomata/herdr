@@ -34,7 +34,7 @@ cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings
 
 The test gate is upstream's `just test` minus three tests that cannot pass on the Unraid kernel or
 as root, and minus the bun-based recipes. It lives in the infra repo as
-`plans/claude-code-infra/scripts/hpp-test-gate.sh`; run it from the laptop with
+`plans/claude-code-infra/scripts/hpp-test-gate.sh`; run it from the desktop (minerva) with
 `ssh unraid 'docker exec -i claude-dev bash -s' < scripts/hpp-test-gate.sh`. Every commit on `hpp`
 must pass it plus fmt and clippy.
 
