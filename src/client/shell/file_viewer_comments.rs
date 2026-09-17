@@ -85,6 +85,10 @@ pub(super) enum CommentEdit {
     Delete {
         id: String,
     },
+    Reattach {
+        id: String,
+        range: std::ops::Range<usize>,
+    },
 }
 
 #[derive(Debug)]
@@ -139,7 +143,7 @@ pub(super) fn apply_edit(
     source: &str,
     edit: &CommentEdit,
 ) -> Result<(String, Option<String>), String> {
-    match edit {
+    let applied = match edit {
         CommentEdit::Add {
             anchor,
             directive,
@@ -154,7 +158,12 @@ pub(super) fn apply_edit(
         CommentEdit::Delete { id } => hc::remove_thread(source, id)
             .map(|text| (text, None))
             .map_err(|err| err.to_string()),
-    }
+        CommentEdit::Reattach { id, range } => hc::reattach(source, id, range.clone())
+            .map(|text| (text, Some(id.clone())))
+            .map_err(|err| err.to_string()),
+    };
+    // Every save also heals anchors that were found by quote after an agent rewrote text.
+    applied.map(|(text, focus)| (hc::restore_markers(&text), focus))
 }
 
 /// After the file changed on disk, move a new comment's span anchor onto its quote again.
@@ -174,6 +183,8 @@ pub(super) fn reanchor_edit(source: &str, edit: &CommentEdit) -> Option<CommentE
                 body: body.clone(),
             })
         }
+        // A re-attach points at bytes the human selected in the old text; ask again.
+        CommentEdit::Reattach { .. } => None,
         other => Some(other.clone()),
     }
 }
@@ -387,6 +398,11 @@ impl ClientShellState {
                 comments.show_panel = !comments.show_panel;
                 true
             }
+            KeyCode::Char('A') => {
+                outcome.repaint = true;
+                self.reattach_focused_thread(outcome);
+                true
+            }
             KeyCode::Esc if comments.selection.is_some() => {
                 outcome.repaint = true;
                 comments.selection = None;
@@ -438,6 +454,39 @@ impl ClientShellState {
                     directive: hc::Directive::Reply,
                     input: TextEditor::default(),
                 });
+            }
+            None => comments.notice = Some("the selection has no file text to anchor".to_owned()),
+        }
+    }
+
+    fn reattach_focused_thread(&mut self, outcome: &mut ClientShellInput) {
+        let width = self
+            .hits
+            .file_viewer
+            .as_ref()
+            .map_or(0, |hits| hits.text_width)
+            .max(1);
+        let Some(ClientShellOverlay::FileViewer(viewer)) = self.overlay.as_mut() else {
+            return;
+        };
+        let Some(document) = viewer.document.as_ref() else {
+            return;
+        };
+        let comments = &mut viewer.comments;
+        let (Some(id), Some(selection)) = (comments.focused.clone(), comments.selection) else {
+            comments.notice =
+                Some("focus a thread (n) and select its new text, then press A".to_owned());
+            return;
+        };
+        match document.selection_anchor(width, &selection) {
+            Some((hc::NewAnchor::Span(range), _)) => {
+                self.start_file_viewer_edit(CommentEdit::Reattach { id, range }, outcome);
+            }
+            Some((hc::NewAnchor::Cell { .. }, _)) => {
+                comments.notice = Some(
+                    "table cells are anchored by cell; re-attach needs text outside tables"
+                        .to_owned(),
+                );
             }
             None => comments.notice = Some("the selection has no file text to anchor".to_owned()),
         }
@@ -550,6 +599,7 @@ impl ClientShellState {
                 viewer.comments.selection = None;
                 viewer.comments.notice = Some(match (&pending.edit, &pending.focus) {
                     (CommentEdit::Delete { id }, _) => format!("thread {id} deleted"),
+                    (CommentEdit::Reattach { id, .. }, _) => format!("thread {id} re-attached"),
                     (_, Some(id)) => format!("saved comment {id}"),
                     _ => "saved".to_owned(),
                 });
@@ -810,7 +860,7 @@ fn restore_composer(comments: &mut CommentState, edit: CommentEdit) {
             directive: hc::Directive::Reply,
             input: TextEditor::from(body.text.as_str()),
         }),
-        CommentEdit::Delete { .. } => None,
+        CommentEdit::Delete { .. } | CommentEdit::Reattach { .. } => None,
     };
 }
 

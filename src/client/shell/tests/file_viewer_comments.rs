@@ -310,3 +310,22 @@ fn commenting_needs_a_selection_and_escape_cancels_the_composer() {
         super::super::file_viewer::FileViewerMode::Browse
     );
 }
+
+#[test]
+fn an_orphaned_thread_can_be_reattached_to_a_new_selection() {
+    let orphan = "The limit is now forty seconds.\n<!-- hc:body id=c1 author=elio ts=t quote=\"thirty seconds\" : per attempt? -->\n";
+    let mut state = state_with_document(orphan);
+    assert!(screen(&mut state).join("\n").contains("⚠ orphaned"));
+    state.handle_input_bytes(b"n");
+    drag_select(&mut state, "forty");
+    let request = only_request(&state.handle_input_bytes(b"A"));
+    let (text, _) = written(&request);
+    assert!(
+        text.starts_with("The limit is now <!--hc:a id=c1-->forty<!--hc:/ id=c1--> seconds."),
+        "{text}"
+    );
+    ack_write(&mut state, &request);
+    let shown = screen(&mut state).join("\n");
+    assert!(shown.contains("thread c1 re-attached"), "{shown}");
+    assert!(!shown.contains("orphaned"), "{shown}");
+}

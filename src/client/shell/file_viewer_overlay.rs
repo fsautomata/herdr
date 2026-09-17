@@ -96,7 +96,7 @@ pub(super) fn render_file_viewer_overlay(
     let footer = match (v.mode, v.search_focused) {
         (FileViewerMode::Diff, _) => " scroll j/k/pgup/pgdn/g/G · staged s · reload r · back esc",
         (FileViewerMode::View, _) if has_comments(v) => {
-            " select+c comment · n/N thread · a reply · d delete · t panel · m raw · D diff · esc back"
+            " select+c comment · n/N thread · a reply · d delete · A re-attach · t panel · m raw · D diff · esc back"
         }
         (FileViewerMode::View, _) => {
             " scroll j/k/pgup/pgdn/g/G · raw/rendered m · diff D · reload r · back esc/h"

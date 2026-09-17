@@ -1110,6 +1110,87 @@ pub(crate) fn remove_thread(source: &str, id: &str) -> Result<String, HcError> {
     Ok(out)
 }
 
+/// Wrap `range` (snapped like a new selection) in marker pairs for `id`, first removing any
+/// markers the thread already has. Used to re-attach an orphaned or moved thread.
+pub(crate) fn reattach(source: &str, id: &str, selection: Range<usize>) -> Result<String, HcError> {
+    let parsed = parse(source);
+    if parsed.thread(id).is_none() {
+        return Err(HcError::UnknownThread(id.to_owned()));
+    }
+    let mut without = source.to_owned();
+    let mut cuts: Vec<Range<usize>> = parsed
+        .markers
+        .iter()
+        .filter(|pair| pair.id == id)
+        .flat_map(|pair| [pair.open.clone(), pair.close.clone()])
+        .collect();
+    cuts.sort_by_key(|range| std::cmp::Reverse(range.start));
+    let mut selection = selection;
+    for cut in &cuts {
+        let len = cut.end - cut.start;
+        if cut.end <= selection.start {
+            selection.start -= len;
+            selection.end -= len;
+        } else if cut.start < selection.end {
+            selection.end = selection.end.saturating_sub(len).max(selection.start);
+        }
+        without.replace_range(cut.clone(), "");
+    }
+    let range = snap_selection(&without, selection);
+    if range.is_empty() {
+        return Err(HcError::EmptySelection);
+    }
+    let structure = structure(&without);
+    if structure
+        .no_marker
+        .iter()
+        .any(|region| region.start < range.end && range.start < region.end)
+    {
+        // Tables and code blocks cannot hold markers; the quote anchor is all we can keep.
+        return Ok(without);
+    }
+    let mut out = without;
+    out.insert_str(range.end, &format!("{CLOSE_PREFIX}id={id}{COMMENT_END}"));
+    out.insert_str(range.start, &format!("{OPEN_PREFIX}id={id}{COMMENT_END}"));
+    Ok(out)
+}
+
+/// Put markers back around threads that were re-anchored by their quote, where markers are
+/// allowed. Applied whenever the viewer saves, so anchors heal after an agent rewrote text.
+pub(crate) fn restore_markers(source: &str) -> String {
+    let parsed = parse(source);
+    let structure = structure(source);
+    let mut inserts: Vec<(usize, String)> = Vec::new();
+    for thread in &parsed.threads {
+        let Anchor::Quoted(range) = &thread.anchor else {
+            continue;
+        };
+        let blocked = structure
+            .no_marker
+            .iter()
+            .chain(structure.atomic.iter())
+            .any(|region| region.start < range.end && range.start < region.end);
+        if blocked {
+            continue;
+        }
+        inserts.push((
+            range.end,
+            format!("{CLOSE_PREFIX}id={}{COMMENT_END}", thread.id),
+        ));
+        inserts.push((
+            range.start,
+            format!("{OPEN_PREFIX}id={}{COMMENT_END}", thread.id),
+        ));
+    }
+    // Back to front, closing markers before opening markers at the same offset.
+    inserts.sort_by_key(|(at, marker)| (std::cmp::Reverse(*at), marker.starts_with(CLOSE_PREFIX)));
+    let mut out = source.to_owned();
+    for (at, marker) in inserts {
+        out.insert_str(at, &marker);
+    }
+    out
+}
+
 /// Current UTC time in the `YYYY-MM-DDTHH:MMZ` form used by `ts`.
 pub(crate) fn now_ts() -> String {
     let now = time::OffsetDateTime::now_utc();
@@ -1425,6 +1506,45 @@ mod tests {
             add_comment(source, NewAnchor::Span(5..6), Directive::Reply, &meta("x")),
             Err(HcError::EmptySelection)
         );
+    }
+
+    #[test]
+    fn reattach_moves_markers_onto_the_new_selection() {
+        let source =
+            "Alpha beta gamma.\n<!-- hc:body id=c1 author=elio ts=t quote=\"gone\" : note -->\n";
+        assert_eq!(parse(source).threads[0].anchor, Anchor::Orphan);
+        let at = source.find("beta").unwrap();
+        let out = reattach(source, "c1", at..at + 4).unwrap();
+        assert!(
+            out.starts_with("Alpha <!--hc:a id=c1-->beta<!--hc:/ id=c1--> gamma."),
+            "{out}"
+        );
+        assert!(matches!(parse(&out).threads[0].anchor, Anchor::Marked(_)));
+
+        // Re-attaching again replaces the old pair instead of nesting a second one.
+        let at = out.find("gamma").unwrap();
+        let again = reattach(&out, "c1", at..at + 5).unwrap();
+        assert_eq!(parse(&again).markers.len(), 1, "{again}");
+        assert!(
+            again.contains("beta <!--hc:a id=c1-->gamma<!--hc:/ id=c1-->."),
+            "{again}"
+        );
+    }
+
+    #[test]
+    fn quoted_anchors_regain_markers_on_save() {
+        let source = "Retry on 5xx within 30s.\n<!-- hc:body id=c1 author=elio ts=t quote=\"on 5xx\" : 429? -->\n";
+        let restored = restore_markers(source);
+        assert!(
+            restored.starts_with("Retry <!--hc:a id=c1-->on 5xx<!--hc:/ id=c1--> within"),
+            "{restored}"
+        );
+        assert!(matches!(
+            parse(&restored).threads[0].anchor,
+            Anchor::Marked(_)
+        ));
+        // Already-marked threads are untouched.
+        assert_eq!(restore_markers(&restored), restored);
     }
 
     #[test]
