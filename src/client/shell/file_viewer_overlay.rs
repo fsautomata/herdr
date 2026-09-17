@@ -6,11 +6,8 @@ use unicode_width::UnicodeWidthChar;
 use super::*;
 use crate::api::schema::FileEntryKind;
 use crate::client::shell::file_viewer::{
-    ClientFileViewerOverlay, FileViewerDocument, FileViewerHits, FileViewerMode, FileViewerRow,
+    ClientFileViewerOverlay, FileViewerHits, FileViewerMode, FileViewerRow,
 };
-
-/// Columns a tab advances to (multiples of this width).
-const TAB_WIDTH: usize = 4;
 
 pub(super) fn render_file_viewer_overlay(
     b: &mut Buffer,
@@ -90,7 +87,9 @@ pub(super) fn render_file_viewer_overlay(
     };
 
     let footer = match (v.mode, v.search_focused) {
-        (FileViewerMode::View, _) => " scroll j/k/pgup/pgdn/g/G · reload r · back esc/h",
+        (FileViewerMode::View, _) => {
+            " scroll j/k/pgup/pgdn/g/G · raw/rendered m · reload r · back esc/h"
+        }
         (FileViewerMode::Browse, true) => " open enter · move ↑↓ · clear esc",
         (FileViewerMode::Browse, false) => {
             " open enter/l · up h/⌫ · filter / · hidden . · reload r · view tab · close esc"
@@ -287,6 +286,13 @@ fn render_document(
         meta.push("not utf-8".to_owned());
     }
     meta.push(format!("{} lines", document.lines.len()));
+    if document.markdown.is_some() {
+        meta.push(if document.rendered {
+            "markdown · m for raw".to_owned()
+        } else {
+            "raw · m to render".to_owned()
+        });
+    }
     put_text(
         b,
         i.x,
@@ -319,61 +325,44 @@ fn render_document(
         );
         return;
     }
-    if viewport == 0 {
+    if viewport == 0 || area.width < 4 {
         return;
     }
 
-    let gutter = (document.lines.len().max(1).ilog10() as u16 + 1).max(3) + 1;
-    let text_width = |scrollbar: bool| {
-        usize::from(
-            area.width
-                .saturating_sub(gutter + 1 + u16::from(scrollbar))
-                .max(1),
-        )
-    };
-    let mut width = text_width(false);
-    let mut total_rows = total_wrapped_rows(document, width);
+    // Leave one column of margin on the right; reserve one more for a scrollbar if needed.
+    let mut width = usize::from(area.width) - 1;
+    let mut counts = document.row_counts(width);
+    let mut total_rows: usize = counts.iter().sum();
     let needs_scrollbar = total_rows > viewport;
     if needs_scrollbar {
-        width = text_width(true);
-        total_rows = total_wrapped_rows(document, width);
+        width -= 1;
+        counts = document.row_counts(width);
+        total_rows = counts.iter().sum();
     }
     let max_scroll = total_rows.saturating_sub(viewport);
     let scroll = document.scroll.min(max_scroll);
     hits.max_scroll = max_scroll;
 
-    let text_style = Style::default().fg(p.text).bg(p.panel_bg);
-    let mut row = 0usize;
+    let source = document.text();
+    let doc = document.active_doc();
+    let mut row_index = 0usize;
     let mut y = area.y;
-    'lines: for (line_index, _) in document.lines.iter().enumerate() {
-        let line = document.line(line_index);
-        let line_rows = wrapped_rows(line, width);
-        if row + line_rows <= scroll {
-            row += line_rows;
+    'lines: for (line, count) in doc.lines.iter().zip(counts.iter()) {
+        if row_index + count <= scroll {
+            row_index += count;
             continue;
         }
-        for (segment_index, segment) in wrap_segments(line, width).into_iter().enumerate() {
-            if row < scroll {
-                row += 1;
+        for row in crate::ui::document::layout_line(source, line, width) {
+            if row_index < scroll {
+                row_index += 1;
                 continue;
             }
             if y >= area.bottom() {
                 break 'lines;
             }
-            if segment_index == 0 {
-                let number = format!("{:>w$} ", line_index + 1, w = usize::from(gutter - 1));
-                put_text(b, area.x, y, gutter, &number, dim);
-            }
-            put_text(
-                b,
-                area.x + gutter + 1,
-                y,
-                width as u16,
-                &segment,
-                text_style,
-            );
+            draw_row(b, Rect::new(area.x, y, width as u16, 1), &row, p);
             y += 1;
-            row += 1;
+            row_index += 1;
         }
     }
     if needs_scrollbar {
@@ -387,6 +376,101 @@ fn render_document(
         hits.scrollbar = track;
         hits.scroll_metrics = Some(metrics);
     }
+}
+
+/// Draw one laid-out row, grouping cells of the same style into text runs.
+fn draw_row(b: &mut Buffer, rect: Rect, row: &crate::ui::document::LaidRow, p: &Palette) {
+    if let Some(fill) = row.fill {
+        b.set_style(rect, doc_style(fill, p));
+    }
+    let mut x = rect.x;
+    let mut run = String::new();
+    let mut run_style = None;
+    let mut run_x = x;
+    for cell in &row.cells {
+        let style = doc_style(cell.style, p);
+        if run_style != Some(style) {
+            if let Some(previous) = run_style {
+                put_text(
+                    b,
+                    run_x,
+                    rect.y,
+                    rect.right().saturating_sub(run_x),
+                    &run,
+                    previous,
+                );
+            }
+            run.clear();
+            run_style = Some(style);
+            run_x = x;
+        }
+        run.push(cell.ch);
+        x = x.saturating_add(u16::from(cell.width));
+    }
+    if let Some(style) = run_style {
+        put_text(
+            b,
+            run_x,
+            rect.y,
+            rect.right().saturating_sub(run_x),
+            &run,
+            style,
+        );
+    }
+    if row.rule && x < rect.right() {
+        let marker = doc_style(
+            crate::ui::document::DocStyle {
+                marker: true,
+                ..Default::default()
+            },
+            p,
+        );
+        let rule = "─".repeat(usize::from(rect.right() - x));
+        put_text(b, x, rect.y, rect.right() - x, &rule, marker);
+    }
+}
+
+/// Map a semantic document style to terminal colors.
+fn doc_style(style: crate::ui::document::DocStyle, p: &Palette) -> Style {
+    let mut out = Style::default().fg(p.text).bg(p.panel_bg);
+    if style.code_block {
+        out = out.bg(p.surface0);
+    }
+    if style.quote {
+        out = out.fg(p.subtext0);
+    }
+    match style.heading {
+        0 => {}
+        1 => {
+            out = out
+                .fg(p.accent)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        }
+        2 => out = out.fg(p.accent).add_modifier(Modifier::BOLD),
+        _ => out = out.fg(p.mauve).add_modifier(Modifier::BOLD),
+    }
+    if style.bold || style.table_header {
+        out = out.add_modifier(Modifier::BOLD);
+    }
+    if style.italic {
+        out = out.add_modifier(Modifier::ITALIC);
+    }
+    if style.strike {
+        out = out.add_modifier(Modifier::CROSSED_OUT);
+    }
+    if style.inline_code {
+        out = out.fg(p.peach).bg(p.surface0);
+    }
+    if style.link {
+        out = out.fg(p.blue).add_modifier(Modifier::UNDERLINED);
+    }
+    if style.marker {
+        out = out.fg(p.accent);
+    }
+    if style.dim {
+        out = out.fg(p.overlay0);
+    }
+    out
 }
 
 fn status_message(v: &ClientFileViewerOverlay) -> Option<(String, Style)> {
@@ -417,63 +501,6 @@ fn draw_scrollbar(b: &mut Buffer, track: Rect, metrics: crate::pane::ScrollMetri
                 .set_style(Style::default().fg(p.overlay1).bg(p.panel_bg));
         }
     }
-}
-
-fn total_wrapped_rows(document: &FileViewerDocument, width: usize) -> usize {
-    (0..document.lines.len())
-        .map(|index| wrapped_rows(document.line(index), width))
-        .sum()
-}
-
-/// Display width of a character in the viewer: tabs expand, control characters show as one cell.
-fn cell_width(ch: char, column: usize) -> usize {
-    if ch == '\t' {
-        TAB_WIDTH - column % TAB_WIDTH
-    } else {
-        ch.width().unwrap_or(1)
-    }
-}
-
-/// Number of screen rows a line occupies when wrapped at `width` cells (at least one).
-pub(crate) fn wrapped_rows(line: &str, width: usize) -> usize {
-    let width = width.max(1);
-    let mut rows = 1;
-    let mut column = 0;
-    for ch in line.chars() {
-        let w = cell_width(ch, column).min(width);
-        if column + w > width {
-            rows += 1;
-            column = 0;
-        }
-        column += cell_width(ch, column).min(width);
-    }
-    rows
-}
-
-/// Wrap a line into display rows of at most `width` cells, expanding tabs and replacing control
-/// characters so every row renders predictably.
-pub(crate) fn wrap_segments(line: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut segments = vec![String::new()];
-    let mut column = 0;
-    for ch in line.chars() {
-        let w = cell_width(ch, column).min(width);
-        if column + w > width {
-            segments.push(String::new());
-            column = 0;
-        }
-        let w = cell_width(ch, column).min(width);
-        let current = segments.last_mut().expect("segments always has a row");
-        if ch == '\t' {
-            current.extend(std::iter::repeat_n(' ', w));
-        } else if ch.is_control() {
-            current.push('\u{FFFD}');
-        } else {
-            current.push(ch);
-        }
-        column += w;
-    }
-    segments
 }
 
 fn truncate_start(text: &str, width: usize) -> String {
@@ -511,32 +538,6 @@ fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn wrapping_counts_match_segments() {
-        for (line, width) in [
-            ("", 5),
-            ("hello", 5),
-            ("hello!", 5),
-            ("a\tb", 3),
-            ("日本語テキスト", 5),
-            ("x".repeat(23).as_str(), 7),
-        ] {
-            assert_eq!(
-                wrapped_rows(line, width),
-                wrap_segments(line, width).len(),
-                "{line:?} at {width}"
-            );
-        }
-        assert_eq!(wrap_segments("hello!", 5), ["hello", "!"]);
-        assert_eq!(wrap_segments("a\tb", 8), ["a   b"]);
-    }
-
-    #[test]
-    fn wide_characters_never_split_across_the_edge() {
-        let rows = wrap_segments("ab日本", 3);
-        assert_eq!(rows, ["ab", "日", "本"]);
-    }
 
     #[test]
     fn sizes_and_paths_are_compact() {

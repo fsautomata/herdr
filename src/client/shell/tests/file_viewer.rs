@@ -135,7 +135,14 @@ fn file_viewer_lists_entries_opens_a_file_and_returns_to_the_list() {
     );
     let text = screen(&mut state);
     assert!(text.contains("/repo/README.md"), "{text}");
-    assert!(text.contains("# Title"), "{text}");
+    // Markdown files render by default: the heading marker is gone.
+    assert!(text.contains("Title"), "{text}");
+    assert!(!text.contains("# Title"), "{text}");
+    assert!(text.contains("markdown · m for raw"), "{text}");
+    // `m` switches to the raw, line-numbered view.
+    state.handle_input_bytes(b"m");
+    let text = screen(&mut state);
+    assert!(text.contains("1  # Title"), "{text}");
     assert!(text.contains("2  first line"), "{text}");
 
     // Esc goes back to the list, a second Esc closes the viewer.

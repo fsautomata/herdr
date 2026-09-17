@@ -1,5 +1,7 @@
 use ratatui::layout::Rect;
 
+pub(crate) mod document;
+pub(crate) mod markdown;
 mod onboarding;
 mod panes;
 mod release_notes;

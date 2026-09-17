@@ -35,29 +35,79 @@ pub(super) struct FileViewerDocument {
     pub(super) content: FileContentInfo,
     /// Byte ranges of each line of `content.text`, without the line terminator.
     pub(super) lines: Vec<std::ops::Range<usize>>,
+    /// Line-numbered plain view.
+    pub(super) plain: crate::ui::document::Doc,
+    /// Rendered view for markdown files.
+    pub(super) markdown: Option<crate::ui::document::Doc>,
+    /// Show the markdown view (when available) instead of the plain one.
+    pub(super) rendered: bool,
     /// Top wrapped row shown in the viewport.
     pub(super) scroll: usize,
+    /// Row counts per line for the last (width, view) pair; layout is costly on big files.
+    row_cache: std::cell::RefCell<Option<RowCache>>,
+}
+
+#[derive(Debug)]
+struct RowCache {
+    width: usize,
+    rendered: bool,
+    counts: std::rc::Rc<Vec<usize>>,
 }
 
 impl FileViewerDocument {
     pub(super) fn new(content: FileContentInfo) -> Self {
         let lines = content.text.as_deref().map(line_ranges).unwrap_or_default();
+        let plain = crate::ui::document::Doc::plain(&lines);
+        let markdown = content
+            .text
+            .as_deref()
+            .filter(|_| crate::ui::markdown::is_markdown_path(&content.path))
+            .map(crate::ui::markdown::parse);
+        let rendered = markdown.is_some();
         Self {
             content,
             lines,
+            plain,
+            markdown,
+            rendered,
             scroll: 0,
+            row_cache: std::cell::RefCell::new(None),
+        }
+    }
+
+    pub(super) fn active_doc(&self) -> &crate::ui::document::Doc {
+        match (&self.markdown, self.rendered) {
+            (Some(markdown), true) => markdown,
+            _ => &self.plain,
+        }
+    }
+
+    /// Screen rows of each line of the active view at `width`, cached per width and view.
+    pub(super) fn row_counts(&self, width: usize) -> std::rc::Rc<Vec<usize>> {
+        let rendered = self.rendered && self.markdown.is_some();
+        if let Some(cache) = self.row_cache.borrow().as_ref() {
+            if cache.width == width && cache.rendered == rendered {
+                return cache.counts.clone();
+            }
+        }
+        let counts = std::rc::Rc::new(self.active_doc().row_counts(self.text(), width));
+        *self.row_cache.borrow_mut() = Some(RowCache {
+            width,
+            rendered,
+            counts: counts.clone(),
+        });
+        counts
+    }
+
+    pub(super) fn toggle_rendered(&mut self) {
+        if self.markdown.is_some() {
+            self.rendered = !self.rendered;
+            self.scroll = 0;
         }
     }
 
     pub(super) fn text(&self) -> &str {
         self.content.text.as_deref().unwrap_or("")
-    }
-
-    pub(super) fn line(&self, index: usize) -> &str {
-        self.lines
-            .get(index)
-            .and_then(|range| self.text().get(range.clone()))
-            .unwrap_or("")
     }
 }
 
@@ -77,7 +127,7 @@ pub(super) struct ClientFileViewerOverlay {
     pub(super) show_hidden: bool,
     pub(super) loading: Option<String>,
     pub(super) error: Option<String>,
-    pub(super) document: Option<FileViewerDocument>,
+    pub(super) document: Option<Box<FileViewerDocument>>,
     /// Serial of the latest request; responses for older requests are ignored.
     pub(super) serial: u64,
     /// Entry name to select when the next listing arrives (e.g. the directory we came from).
@@ -313,7 +363,7 @@ impl ClientShellState {
                     .unwrap_or(0);
             }
             Ok(ResponseResult::FileContent { file }) => {
-                viewer.document = Some(FileViewerDocument::new(file));
+                viewer.document = Some(Box::new(FileViewerDocument::new(file)));
                 viewer.mode = FileViewerMode::View;
             }
             Ok(_) => viewer.error = Some("unexpected response from server".to_owned()),
@@ -445,6 +495,11 @@ impl ClientShellState {
                     }
                 }
                 KeyCode::Char('r') => self.file_viewer_reload(outcome),
+                KeyCode::Char('m') => {
+                    if let Some(document) = viewer.document.as_mut() {
+                        document.toggle_rendered();
+                    }
+                }
                 _ => outcome.repaint = false,
             },
             FileViewerMode::Browse if viewer.search_focused => match code {

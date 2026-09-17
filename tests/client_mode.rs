@@ -2221,7 +2221,9 @@ fn file_viewer_browses_and_reads_files_through_the_server() {
     assert!(
         wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
             let text = screen();
-            text.contains("VIEWER_BODY_LINE") && text.contains("# Viewer heading")
+            text.contains("VIEWER_BODY_LINE")
+                && text.contains("Viewer heading")
+                && !text.contains("# Viewer heading")
         }),
         "file viewer should show the file content; screen:\n{}",
         screen()
