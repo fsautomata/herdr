@@ -80,13 +80,13 @@ pub(super) fn render_file_viewer_overlay(
 
     let cursor = match v.mode {
         FileViewerMode::Browse => render_browser(b, v, i, body, p, &mut hits),
-        FileViewerMode::View => {
-            render_document(b, v, i, body, p, &mut hits);
-            None
-        }
+        FileViewerMode::View => render_document(b, v, i, body, p, &mut hits),
     };
 
     let footer = match (v.mode, v.search_focused) {
+        (FileViewerMode::View, _) if has_comments(v) => {
+            " select+c comment · n/N thread · a reply · d delete · t panel · m raw · esc back"
+        }
         (FileViewerMode::View, _) => {
             " scroll j/k/pgup/pgdn/g/G · raw/rendered m · reload r · back esc/h"
         }
@@ -272,11 +272,9 @@ fn render_document(
     body: Rect,
     p: &Palette,
     hits: &mut FileViewerHits,
-) {
+) -> Option<crate::protocol::CursorState> {
     let dim = Style::default().fg(p.overlay0).bg(p.panel_bg);
-    let Some(document) = v.document.as_ref() else {
-        return;
-    };
+    let document = v.document.as_ref()?;
     let content = &document.content;
     let mut meta = vec![human_size(content.size)];
     if content.truncated {
@@ -286,11 +284,19 @@ fn render_document(
         meta.push("not utf-8".to_owned());
     }
     meta.push(format!("{} lines", document.lines.len()));
+    if let Some(parsed) = document.comments.as_ref() {
+        let open = parsed
+            .threads
+            .iter()
+            .filter(|thread| !parsed.is_resolved(thread))
+            .count();
+        meta.push(format!("{} comments ({open} open)", parsed.threads.len()));
+    }
     if document.markdown.is_some() {
         meta.push(if document.rendered {
-            "markdown · m for raw".to_owned()
+            "markdown".to_owned()
         } else {
-            "raw · m to render".to_owned()
+            "raw".to_owned()
         });
     }
     put_text(
@@ -312,9 +318,8 @@ fn render_document(
             area.height.saturating_sub(1),
         );
     }
-    let viewport = usize::from(area.height);
-    hits.viewport_rows = viewport.max(1);
     if content.binary {
+        hits.viewport_rows = usize::from(area.height).max(1);
         put_text(
             b,
             area.x + 1,
@@ -323,10 +328,37 @@ fn render_document(
             &format!("binary file, {} — not shown", human_size(content.size)),
             dim,
         );
-        return;
+        return None;
     }
+
+    // Comment panel on the right when there is room; otherwise the composer takes the bottom.
+    let comments = &v.comments;
+    let has_threads = document
+        .comments
+        .as_ref()
+        .is_some_and(|parsed| !parsed.threads.is_empty());
+    let wants_panel = document.comments.is_some()
+        && comments.show_panel
+        && (has_threads || comments.composer.is_some());
+    let mut cursor = None;
+    if wants_panel && area.width >= 90 {
+        let panel_width = (area.width / 3).clamp(32, 56);
+        let panel = Rect::new(area.right() - panel_width, area.y, panel_width, area.height);
+        cursor = file_viewer_panel::render_comment_panel(b, panel, document, comments, p, hits);
+        area = Rect::new(area.x, area.y, area.width - panel_width, area.height);
+    } else if let Some(composer) = comments.composer.as_ref() {
+        if area.height > file_viewer_panel::COMPOSER_ROWS + 2 {
+            let rows = file_viewer_panel::COMPOSER_ROWS;
+            let rect = Rect::new(area.x, area.bottom() - rows, area.width, rows);
+            cursor = file_viewer_panel::render_composer(b, rect, composer, p);
+            area = Rect::new(area.x, area.y, area.width, area.height - rows);
+        }
+    }
+
+    let viewport = usize::from(area.height);
+    hits.viewport_rows = viewport.max(1);
     if viewport == 0 || area.width < 4 {
-        return;
+        return cursor;
     }
 
     // Leave one column of margin on the right; reserve one more for a scrollbar if needed.
@@ -342,7 +374,27 @@ fn render_document(
     let max_scroll = total_rows.saturating_sub(viewport);
     let scroll = document.scroll.min(max_scroll);
     hits.max_scroll = max_scroll;
+    hits.text_area = Rect::new(area.x, area.y, width as u16, area.height);
+    hits.text_width = width;
+    hits.doc_scroll = scroll;
 
+    let decorations = Decorations {
+        anchors: document
+            .comments
+            .as_ref()
+            .map(|parsed| {
+                parsed
+                    .threads
+                    .iter()
+                    .filter_map(|thread| {
+                        let focused = comments.focused.as_deref() == Some(thread.id.as_str());
+                        thread.anchor.range().map(|range| (range, focused))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        selection: comments.selection,
+    };
     let source = document.text();
     let doc = document.active_doc();
     let mut row_index = 0usize;
@@ -360,7 +412,14 @@ fn render_document(
             if y >= area.bottom() {
                 break 'lines;
             }
-            draw_row(b, Rect::new(area.x, y, width as u16, 1), &row, p);
+            draw_row(
+                b,
+                Rect::new(area.x, y, width as u16, 1),
+                &row,
+                p,
+                row_index,
+                &decorations,
+            );
             y += 1;
             row_index += 1;
         }
@@ -376,19 +435,55 @@ fn render_document(
         hits.scrollbar = track;
         hits.scroll_metrics = Some(metrics);
     }
+    cursor
+}
+
+/// Comment anchors (with focus) and the mouse selection to paint over document text.
+struct Decorations {
+    anchors: Vec<(std::ops::Range<usize>, bool)>,
+    selection: Option<crate::client::shell::file_viewer_comments::DocSelection>,
 }
 
 /// Draw one laid-out row, grouping cells of the same style into text runs.
-fn draw_row(b: &mut Buffer, rect: Rect, row: &crate::ui::document::LaidRow, p: &Palette) {
+fn draw_row(
+    b: &mut Buffer,
+    rect: Rect,
+    row: &crate::ui::document::LaidRow,
+    p: &Palette,
+    row_index: usize,
+    decorations: &Decorations,
+) {
     if let Some(fill) = row.fill {
         b.set_style(rect, doc_style(fill, p));
     }
+    let selected = decorations
+        .selection
+        .and_then(|selection| selection.columns_on(row_index));
     let mut x = rect.x;
+    let mut col = 0usize;
     let mut run = String::new();
     let mut run_style = None;
     let mut run_x = x;
     for cell in &row.cells {
-        let style = doc_style(cell.style, p);
+        let mut style = doc_style(cell.style, p);
+        if selected.is_some_and(|(first, last)| col >= first && col <= last) {
+            style = style.bg(p.selection_bg).fg(p.text);
+        } else if let Some(src) = cell.src {
+            if let Some((_, focused)) = decorations
+                .anchors
+                .iter()
+                .find(|(range, _)| range.contains(&src))
+            {
+                style = if *focused {
+                    style
+                        .bg(p.surface1)
+                        .fg(p.yellow)
+                        .add_modifier(Modifier::UNDERLINED)
+                } else {
+                    style.bg(p.surface0).add_modifier(Modifier::UNDERLINED)
+                };
+            }
+        }
         if run_style != Some(style) {
             if let Some(previous) = run_style {
                 put_text(
@@ -406,6 +501,7 @@ fn draw_row(b: &mut Buffer, rect: Rect, row: &crate::ui::document::LaidRow, p: &
         }
         run.push(cell.ch);
         x = x.saturating_add(u16::from(cell.width));
+        col += usize::from(cell.width);
     }
     if let Some(style) = run_style {
         put_text(
@@ -480,12 +576,27 @@ fn status_message(v: &ClientFileViewerOverlay) -> Option<(String, Style)> {
             Style::default().fg(ratatui::style::Color::Red),
         ));
     }
-    v.loading.as_ref().map(|loading| {
-        (
+    if let Some(loading) = &v.loading {
+        return Some((
             format!(" {loading}…"),
             Style::default().add_modifier(Modifier::DIM),
-        )
-    })
+        ));
+    }
+    if v.mode == FileViewerMode::View {
+        if let Some(notice) = &v.comments.notice {
+            return Some((
+                format!(" {notice}"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+    None
+}
+
+fn has_comments(v: &ClientFileViewerOverlay) -> bool {
+    v.document
+        .as_ref()
+        .is_some_and(|document| document.comments.is_some())
 }
 
 fn draw_scrollbar(b: &mut Buffer, track: Rect, metrics: crate::pane::ScrollMetrics, p: &Palette) {

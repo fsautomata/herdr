@@ -250,6 +250,7 @@ mod copy;
 mod endpoint_requests;
 mod endpoints;
 mod file_viewer;
+mod file_viewer_comments;
 mod graphics;
 #[path = "input.rs"]
 mod input_domain;

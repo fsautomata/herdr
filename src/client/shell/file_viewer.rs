@@ -45,6 +45,8 @@ pub(super) struct FileViewerDocument {
     pub(super) scroll: usize,
     /// Row counts per line for the last (width, view) pair; layout is costly on big files.
     row_cache: std::cell::RefCell<Option<RowCache>>,
+    /// Comment threads, for markdown files that can be edited.
+    pub(super) comments: Option<crate::hc::Parsed>,
 }
 
 #[derive(Debug)]
@@ -64,6 +66,11 @@ impl FileViewerDocument {
             .filter(|_| crate::ui::markdown::is_markdown_path(&content.path))
             .map(crate::ui::markdown::parse);
         let rendered = markdown.is_some();
+        let comments = markdown
+            .as_ref()
+            .filter(|_| !content.truncated && !content.lossy && !content.binary)
+            .and(content.text.as_deref())
+            .map(crate::hc::parse);
         Self {
             content,
             lines,
@@ -72,7 +79,14 @@ impl FileViewerDocument {
             rendered,
             scroll: 0,
             row_cache: std::cell::RefCell::new(None),
+            comments,
         }
+    }
+
+    /// Whether comments can be written: the whole file was read as valid UTF-8 text.
+    pub(super) fn editable(&self) -> bool {
+        let content = &self.content;
+        !content.truncated && !content.lossy && !content.binary && content.text.is_some()
     }
 
     pub(super) fn active_doc(&self) -> &crate::ui::document::Doc {
@@ -132,6 +146,7 @@ pub(super) struct ClientFileViewerOverlay {
     pub(super) serial: u64,
     /// Entry name to select when the next listing arrives (e.g. the directory we came from).
     pub(super) select_after_list: Option<String>,
+    pub(super) comments: super::file_viewer_comments::CommentState,
 }
 
 impl ClientFileViewerOverlay {
@@ -152,6 +167,7 @@ impl ClientFileViewerOverlay {
             document: None,
             serial: 0,
             select_after_list: None,
+            comments: super::file_viewer_comments::CommentState::new(),
         }
     }
 
@@ -191,6 +207,10 @@ impl ClientFileViewerOverlay {
         self.selected = next.min(len - 1);
     }
 
+    pub(super) fn scroll_document_by(&mut self, delta: isize) {
+        self.scroll_document(delta);
+    }
+
     fn scroll_document(&mut self, delta: isize) {
         if let Some(document) = self.document.as_mut() {
             document.scroll = if delta.is_negative() {
@@ -215,6 +235,11 @@ enum FileViewerRequest {
     Read {
         path: String,
     },
+    Write {
+        path: String,
+        text: String,
+        expected_sha256: String,
+    },
 }
 
 /// Hit-test geometry produced by rendering, consumed by mouse input.
@@ -232,15 +257,22 @@ pub(crate) struct FileViewerHits {
     /// Browser scroll offset after keeping the selection visible.
     pub(crate) list_scroll: usize,
     pub(crate) viewport_rows: usize,
+    /// Document text area and its wrap width (view mode).
+    pub(crate) text_area: Rect,
+    pub(crate) text_width: usize,
+    /// Effective top row of the document viewport.
+    pub(crate) doc_scroll: usize,
+    /// Thread headers in the comment panel.
+    pub(crate) panel_threads: Vec<(Rect, String)>,
 }
 
 impl ClientShellState {
     /// Open the viewer at the focused pane's directory (falling back to the workspace default).
     pub(super) fn open_file_viewer(&mut self, outcome: &mut ClientShellInput) {
         let dir = self.file_viewer_start_dir();
-        self.overlay = Some(ClientShellOverlay::FileViewer(
+        self.overlay = Some(ClientShellOverlay::FileViewer(Box::new(
             ClientFileViewerOverlay::new(dir.clone()),
-        ));
+        )));
         self.send_file_viewer_request(
             FileViewerRequest::List {
                 path: dir,
@@ -306,6 +338,22 @@ impl ClientShellState {
                     PendingEndpointKind::FileViewerRead { serial },
                 )
             }
+            FileViewerRequest::Write {
+                path,
+                text,
+                expected_sha256,
+            } => {
+                viewer.loading = Some("saving".to_owned());
+                (
+                    Method::FileWrite(crate::api::schema::FileWriteParams {
+                        path,
+                        text,
+                        expected_sha256: Some(expected_sha256),
+                        create: false,
+                    }),
+                    PendingEndpointKind::FileViewerWrite { serial },
+                )
+            }
         };
         let method_name = crate::api::api_method_name(&method).to_owned();
         let sent = self.push_endpoint_method_with_kind(method, kind, outcome);
@@ -319,24 +367,52 @@ impl ClientShellState {
         }
     }
 
-    /// Apply a `file.list` / `file.read` response. Returns whether to repaint.
+    pub(super) fn send_file_viewer_write(
+        &mut self,
+        path: String,
+        text: String,
+        expected_sha256: String,
+        outcome: &mut ClientShellInput,
+    ) {
+        self.send_file_viewer_request(
+            FileViewerRequest::Write {
+                path,
+                text,
+                expected_sha256,
+            },
+            outcome,
+        );
+    }
+
+    pub(super) fn send_file_viewer_read(&mut self, path: String, outcome: &mut ClientShellInput) {
+        self.send_file_viewer_request(FileViewerRequest::Read { path }, outcome);
+    }
+
+    /// Apply a file viewer response. Returns whether to repaint and follow-up actions.
     pub(super) fn complete_file_viewer_request(
         &mut self,
         kind: PendingEndpointKind,
         result: Result<ResponseResult, ClientShellEndpointError>,
-    ) -> bool {
+    ) -> (bool, Vec<ClientShellAction>) {
+        let mut outcome = ClientShellInput::default();
         let Some(ClientShellOverlay::FileViewer(viewer)) = self.overlay.as_mut() else {
-            return false;
+            return (false, Vec::new());
         };
-        let serial = match kind {
+        let (serial, is_write) = match kind {
             PendingEndpointKind::FileViewerList { serial }
-            | PendingEndpointKind::FileViewerRead { serial } => serial,
-            _ => return false,
+            | PendingEndpointKind::FileViewerRead { serial } => (serial, false),
+            PendingEndpointKind::FileViewerWrite { serial } => (serial, true),
+            _ => return (false, Vec::new()),
         };
         if serial != viewer.serial {
-            return false;
+            return (false, Vec::new());
         }
         viewer.loading = None;
+        if is_write {
+            self.complete_file_viewer_write(result, &mut outcome);
+            return (true, outcome.actions);
+        }
+        let mut retry_after_reload = false;
         match result {
             Ok(ResponseResult::FileList {
                 path,
@@ -363,13 +439,33 @@ impl ClientShellState {
                     .unwrap_or(0);
             }
             Ok(ResponseResult::FileContent { file }) => {
-                viewer.document = Some(Box::new(FileViewerDocument::new(file)));
+                let mut document = FileViewerDocument::new(file);
+                // Reloading the same file keeps the reader's place and view.
+                if let Some(previous) = viewer
+                    .document
+                    .as_ref()
+                    .filter(|previous| previous.content.path == document.content.path)
+                {
+                    document.scroll = previous.scroll;
+                    document.rendered = previous.rendered && document.markdown.is_some();
+                } else {
+                    viewer.comments = super::file_viewer_comments::CommentState::new();
+                }
+                viewer.document = Some(Box::new(document));
                 viewer.mode = FileViewerMode::View;
+                retry_after_reload = viewer
+                    .comments
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.reloading);
             }
             Ok(_) => viewer.error = Some("unexpected response from server".to_owned()),
             Err(error) => viewer.error = Some(error.message),
         }
-        true
+        if retry_after_reload {
+            self.retry_file_viewer_edit_after_reload(&mut outcome);
+        }
+        (true, outcome.actions)
     }
 
     fn file_viewer_open_selected(&mut self, outcome: &mut ClientShellInput) {
@@ -441,6 +537,9 @@ impl ClientShellState {
 
     /// Insert typed or pasted text into the browser filter. Returns whether it was consumed.
     pub(super) fn insert_file_viewer_text(&mut self, text: &str) -> bool {
+        if self.insert_file_viewer_comment_text(text) {
+            return true;
+        }
         let Some(ClientShellOverlay::FileViewer(viewer)) = self.overlay.as_mut() else {
             return false;
         };
@@ -460,6 +559,11 @@ impl ClientShellState {
         key: &crate::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) -> bool {
+        if matches!(self.overlay, Some(ClientShellOverlay::FileViewer(_)))
+            && self.route_file_viewer_comment_key(key, outcome)
+        {
+            return true;
+        }
         let Some(ClientShellOverlay::FileViewer(viewer)) = self.overlay.as_mut() else {
             return false;
         };
@@ -561,6 +665,11 @@ impl ClientShellState {
         mouse: MouseEvent,
         outcome: &mut ClientShellInput,
     ) -> bool {
+        if matches!(self.overlay, Some(ClientShellOverlay::FileViewer(_)))
+            && self.route_file_viewer_comment_mouse(mouse, outcome)
+        {
+            return true;
+        }
         let Some(ClientShellOverlay::FileViewer(viewer)) = self.overlay.as_mut() else {
             return false;
         };

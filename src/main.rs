@@ -27,6 +27,7 @@ mod file_access;
 mod fork;
 mod ghostty;
 mod handoff_runtime;
+mod hc;
 mod input;
 mod integration;
 mod ipc;
@@ -553,6 +554,13 @@ fn main() -> io::Result<()> {
     }
 
     // Subcommands and flags (no TUI, no logging needed)
+    // hpp fork: print the hc: inline comment protocol for agents.
+    if args.get(1).map(|s| s.as_str()) == Some("protocol") {
+        platform::begin_cli_output();
+        print!("{}", fork::HC_PROTOCOL);
+        return Ok(());
+    }
+
     if args.get(1).map(|s| s.as_str()) == Some("remote-client-bridge") {
         return remote::run_remote_client_bridge(&args[2..]);
     }

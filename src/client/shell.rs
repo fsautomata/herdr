@@ -17,6 +17,7 @@ mod endpoint_sidebar;
 mod endpoints;
 pub(super) use endpoints::*;
 mod file_viewer;
+mod file_viewer_comments;
 mod global_menu;
 mod graphics;
 mod input;

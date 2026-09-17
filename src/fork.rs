@@ -28,6 +28,9 @@ pub fn version_label() -> String {
     )
 }
 
+/// Agent-facing description of the `hc:` inline comment format (`hpp protocol`).
+pub const HC_PROTOCOL: &str = include_str!("../skills/hpp-review-comments/hc-comments.md");
+
 /// Message used wherever upstream would download or self-install a herdr.dev release.
 pub fn no_published_releases_message() -> String {
     format!(
@@ -43,6 +46,20 @@ mod tests {
         let label = super::version_label();
         assert!(label.starts_with("hpp "));
         assert!(label.contains("+hpp."));
+    }
+
+    #[test]
+    fn protocol_documents_every_directive() {
+        for word in [
+            "directive",
+            "reply",
+            "fix",
+            "discuss",
+            "hc:body",
+            "reply-to",
+        ] {
+            assert!(super::HC_PROTOCOL.contains(word), "{word}");
+        }
     }
 
     #[test]

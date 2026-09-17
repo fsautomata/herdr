@@ -1,6 +1,7 @@
 use super::*;
 
 mod file_viewer_overlay;
+mod file_viewer_panel;
 mod settings_overlay;
 mod worktree_overlays;
 

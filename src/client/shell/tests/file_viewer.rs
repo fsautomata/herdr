@@ -138,7 +138,7 @@ fn file_viewer_lists_entries_opens_a_file_and_returns_to_the_list() {
     // Markdown files render by default: the heading marker is gone.
     assert!(text.contains("Title"), "{text}");
     assert!(!text.contains("# Title"), "{text}");
-    assert!(text.contains("markdown · m for raw"), "{text}");
+    assert!(text.contains("· markdown"), "{text}");
     // `m` switches to the raw, line-numbered view.
     state.handle_input_bytes(b"m");
     let text = screen(&mut state);

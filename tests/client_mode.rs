@@ -2251,3 +2251,120 @@ fn file_viewer_browses_and_reads_files_through_the_server() {
     drop(server);
     cleanup_spawned_herdr(client, base);
 }
+
+/// hpp fork: selecting text with the mouse and saving a comment writes `hc:` markers and a body
+/// into the file on disk through the server's `file.write`.
+#[test]
+fn file_viewer_mouse_selection_comment_is_written_to_disk() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+    let files = base.join("comment-files");
+    fs::create_dir_all(&files).unwrap();
+    let spec = files.join("SPEC.md");
+    fs::write(&spec, "# Spec\n\nThe system MUST retry on errors.\n").unwrap();
+
+    let server = spawn_server(&config_home, &runtime_dir, &api_socket, &client_socket);
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_socket(&client_socket, Duration::from_secs(10));
+    let created = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "comment-workspace",
+            "method": "workspace.create",
+            "params": {"cwd": files, "focus": true, "label": "comment-space"},
+        })
+        .to_string(),
+    );
+    assert_eq!(created["result"]["type"], "workspace_created", "{created}");
+
+    let client = spawn_client_shell_process(&config_home, &runtime_dir, &api_socket);
+    let master = client._master.as_ref().expect("client shell PTY");
+    let output = spawn_pty_drain(master.try_clone_reader().expect("clone client reader"));
+    let mut writer = master.take_writer().expect("client shell writer");
+    let screen = || {
+        let bytes = output
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .bytes
+            .clone();
+        terminal_screen::text(&bytes, 80, 24)
+    };
+    let wait_for = |what: &str, check: &dyn Fn(&str) -> bool| {
+        assert!(
+            wait_until(Duration::from_secs(8), Duration::from_millis(20), || check(
+                &screen()
+            )),
+            "{what}; screen:\n{}",
+            screen()
+        );
+    };
+    wait_for("client shell should attach", &|text| {
+        text.contains("comment-space")
+    });
+
+    writer.write_all(b"\x02f").unwrap();
+    wait_for("viewer should list SPEC.md", &|text| {
+        text.contains("SPEC.md")
+    });
+    writer.write_all(b"j").unwrap();
+    thread::sleep(Duration::from_millis(100));
+    writer.write_all(b"\r").unwrap();
+    wait_for("document should render", &|text| {
+        text.contains("retry on errors")
+    });
+
+    // Locate "retry" and drag across it with SGR mouse reports (1-based coordinates).
+    let (column, row) = screen()
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find("retry")
+                .map(|byte| (line[..byte].chars().count() as u16 + 1, row as u16 + 1))
+        })
+        .expect("retry on screen");
+    let last = column + 4;
+    writer
+        .write_all(format!("\x1b[<0;{column};{row}M").as_bytes())
+        .unwrap();
+    writer
+        .write_all(format!("\x1b[<32;{last};{row}M").as_bytes())
+        .unwrap();
+    writer
+        .write_all(format!("\x1b[<0;{last};{row}m").as_bytes())
+        .unwrap();
+    wait_for("selection should be acknowledged", &|text| {
+        text.contains("c to comment")
+    });
+
+    writer.write_all(b"c").unwrap();
+    wait_for("composer should open", &|text| text.contains("comment on"));
+    writer.write_all(b"why retry?").unwrap();
+    thread::sleep(Duration::from_millis(100));
+    writer.write_all(b"\r").unwrap();
+
+    assert!(
+        wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
+            fs::read_to_string(&spec).is_ok_and(|text| text.contains("why retry?"))
+        }),
+        "comment should be written to disk; screen:\n{}",
+        screen()
+    );
+    let written = fs::read_to_string(&spec).unwrap();
+    assert!(
+        written.contains("The system MUST <!--hc:a id=c1-->retry<!--hc:/ id=c1--> on errors."),
+        "{written}"
+    );
+    assert!(written.contains("<!-- hc:body id=c1 author="), "{written}");
+    assert!(written.contains("directive=reply"), "{written}");
+    wait_for("viewer should confirm the save", &|text| {
+        text.contains("saved comment c1")
+    });
+
+    drop(writer);
+    drop(server);
+    cleanup_spawned_herdr(client, base);
+}

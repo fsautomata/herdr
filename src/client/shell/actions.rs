@@ -492,13 +492,12 @@ impl ClientShellState {
         }
         if matches!(
             pending.kind,
-            PendingEndpointKind::FileViewerList { .. } | PendingEndpointKind::FileViewerRead { .. }
+            PendingEndpointKind::FileViewerList { .. }
+                | PendingEndpointKind::FileViewerRead { .. }
+                | PendingEndpointKind::FileViewerWrite { .. }
         ) {
             // File viewer errors are shown inside the overlay, not as endpoint notices.
-            return (
-                self.complete_file_viewer_request(pending.kind, result),
-                Vec::new(),
-            );
+            return self.complete_file_viewer_request(pending.kind, result);
         }
         if result.is_ok() {
             let timeout_key = ClientEndpointNoticeKey {

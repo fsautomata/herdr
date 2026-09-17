@@ -584,7 +584,7 @@ pub(super) enum ClientShellOverlay {
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
-    FileViewer(super::file_viewer::ClientFileViewerOverlay),
+    FileViewer(Box<super::file_viewer::ClientFileViewerOverlay>),
 }
 
 impl ClientShellOverlay {
@@ -651,6 +651,9 @@ pub(super) enum PendingEndpointKind {
         serial: u64,
     },
     FileViewerRead {
+        serial: u64,
+    },
+    FileViewerWrite {
         serial: u64,
     },
     PaneLinkActivate {
